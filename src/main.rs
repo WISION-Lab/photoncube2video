@@ -1,4 +1,5 @@
 use rusttype::{Font, Scale};
+use std::fs::create_dir_all;
 use std::path::Path;
 use std::process;
 
@@ -6,7 +7,7 @@ use clap::{Parser, ValueEnum};
 use image::{imageops, GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
-use indicatif::ParallelProgressIterator;
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 
 use ndarray::parallel::prelude::*;
 use ndarray::prelude::*;
@@ -20,6 +21,9 @@ struct Args {
     /// Path to photon cube (npy file)
     #[arg(short, long)]
     npy_path: String,
+
+    #[arg(short, long, default_value = "frames/")]
+    out_path: String,
 
     /// Number of frames to average together
     #[arg(short, long, default_value_t = 256)]
@@ -94,6 +98,7 @@ fn annotate(frame: &mut RgbImage, text: &str) {
 }
 
 fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
+    // Not if we don't shadow `frame` as a mut, we cannot override it in the loop
     let mut frame = frame;
 
     for t in transform.iter() {
@@ -118,6 +123,7 @@ fn main() {
         eprintln!("Photon cube data not found at {}!", args.npy_path);
         process::exit(exitcode::OSFILE);
     }
+    create_dir_all(&args.out_path).ok();
 
     // Read in the npy file, we expext it to have ndim==3, and of type u8, error if it is not.
     let cube: Array3<u8> = read_npy(args.npy_path).unwrap();
@@ -125,14 +131,21 @@ fn main() {
 
     // Create chunked iterator over all data
     let groups = cube.axis_chunks_iter(Axis(0), args.burst_size);
+    let pbar_style = ProgressStyle::with_template(
+        "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+    )
+    .unwrap();
 
     // Functional style loop over all chunks of frames
     // The for-loop body is an anonymous function allowing it to be called
     // by mutyiple threads in parallel.
     groups
+        // Make it parallel
         .into_par_iter()
-        .enumerate()
+        // Add progress bar
         .progress_count(t / args.burst_size as u64)
+        .with_style(pbar_style)
+        .enumerate()
         .for_each(|(i, group)| {
             let frame = group
                 // Unpack every frame in group
@@ -162,7 +175,11 @@ fn main() {
                 );
             }
 
-            frame.save(format!("frames/frame{:06}.png", i)).ok();
+            // Throw error if we cannot save.
+            let path = Path::new(&args.out_path).join(format!("frame{:06}.png", i));
+            frame
+                .save(&path)
+                .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
         });
 
     // Return successful!
