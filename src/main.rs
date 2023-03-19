@@ -1,16 +1,16 @@
+use rusttype::{Font, Scale};
 use std::path::Path;
 use std::process;
 
 use clap::Parser;
-use image::{ImageBuffer, Luma};
+use image::{GrayImage, Luma};
+use imageproc::drawing::{draw_text_mut, text_size};
 use indicatif::ParallelProgressIterator;
 
 use ndarray::parallel::prelude::*;
 use ndarray::prelude::*;
 use ndarray::Slice;
 use ndarray_npy::read_npy;
-
-type GrayImage<'a> = ImageBuffer<Luma<u8>, &'a [u8]>;
 
 /// Convert a photon cube (npy file) to a video preview (mp4) by naively averaging frames.
 #[derive(Parser, Debug)]
@@ -55,9 +55,18 @@ fn array2image(frame: &Array2<u8>) -> GrayImage {
     GrayImage::from_raw(
         frame.len_of(Axis(1)) as u32,
         frame.len_of(Axis(0)) as u32,
-        frame.as_slice().unwrap(),
+        frame.as_slice().unwrap().to_vec(),
     )
     .unwrap()
+}
+
+fn annotate(frame: &mut GrayImage, text: &str) {
+    let font = Vec::from(include_bytes!("DejaVuSans.ttf") as &[u8]);
+    let font = Font::try_from_vec(font).unwrap();
+    let scale = Scale { x: 20.0, y: 20.0 };
+
+    draw_text_mut(frame, Luma([255u8]), 5, 5, scale, &font, text);
+    text_size(scale, &font, text);
 }
 
 fn main() {
@@ -77,6 +86,9 @@ fn main() {
     // Create chunked iterator over all data
     let groups = cube.axis_chunks_iter(Axis(0), args.burst_size);
 
+    // Functional style loop over all chunks of frames
+    // The for-loop body is an anonymous function allowing it to be called
+    // by mutyiple threads in parallel.
     groups
         .into_par_iter()
         .enumerate()
@@ -96,7 +108,16 @@ fn main() {
             // Convert to float and normalize by burst_size, then convert to img
             let frame = frame.mapv(|x| x as f32) / (args.burst_size as f32) * 255.0;
             let frame = frame.mapv(|x| x as u8);
-            let frame = array2image(&frame);
+            let mut frame = array2image(&frame);
+
+            annotate(
+                &mut frame,
+                &format!(
+                    "{:06}:{:06}",
+                    i * args.burst_size,
+                    (i + 1) * args.burst_size
+                ),
+            );
 
             frame.save(format!("frames/frame{:06}.png", i)).ok();
         });

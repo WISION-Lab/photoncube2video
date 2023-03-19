@@ -800,6 +800,7 @@ dependencies = [
  "ndarray",
  "ndarray-npy",
  "rayon",
+ "rusttype",
 ]
 
 [[package]]
