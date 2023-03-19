@@ -3,8 +3,9 @@ use std::path::Path;
 use std::process;
 
 use clap::Parser;
-use image::{GrayImage, Luma};
+use image::{GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
+use imageproc::map::map_pixels;
 use indicatif::ParallelProgressIterator;
 
 use ndarray::parallel::prelude::*;
@@ -23,6 +24,10 @@ struct Args {
     /// Number of frames to average together
     #[arg(short, long, default_value_t = 256)]
     burst_size: usize,
+
+    /// If enabled, add bitplane indices to images
+    #[arg(short, long, action)]
+    annotate: bool,
 }
 
 #[allow(dead_code)]
@@ -51,21 +56,25 @@ fn unpack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Array2<u8> {
     unpacked_bitplane
 }
 
-fn array2image(frame: &Array2<u8>) -> GrayImage {
-    GrayImage::from_raw(
+fn array2image(frame: &Array2<u8>) -> RgbImage {
+    // Create garyscale image
+    let img = GrayImage::from_raw(
         frame.len_of(Axis(1)) as u32,
         frame.len_of(Axis(0)) as u32,
         frame.as_slice().unwrap().to_vec(),
     )
-    .unwrap()
+    .unwrap();
+
+    // Convert it to rgb by duplicating each pixel
+    map_pixels(&img, |_x, _y, p| Rgb([p[0], p[0], p[0]]))
 }
 
-fn annotate(frame: &mut GrayImage, text: &str) {
+fn annotate(frame: &mut RgbImage, text: &str) {
     let font = Vec::from(include_bytes!("DejaVuSans.ttf") as &[u8]);
     let font = Font::try_from_vec(font).unwrap();
     let scale = Scale { x: 20.0, y: 20.0 };
 
-    draw_text_mut(frame, Luma([255u8]), 5, 5, scale, &font, text);
+    draw_text_mut(frame, Rgb([252, 186, 3]), 5, 5, scale, &font, text);
     text_size(scale, &font, text);
 }
 
@@ -110,14 +119,16 @@ fn main() {
             let frame = frame.mapv(|x| x as u8);
             let mut frame = array2image(&frame);
 
-            annotate(
-                &mut frame,
-                &format!(
-                    "{:06}:{:06}",
-                    i * args.burst_size,
-                    (i + 1) * args.burst_size
-                ),
-            );
+            if args.annotate {
+                annotate(
+                    &mut frame,
+                    &format!(
+                        "{:06}:{:06}",
+                        i * args.burst_size,
+                        (i + 1) * args.burst_size
+                    ),
+                );
+            }
 
             frame.save(format!("frames/frame{:06}.png", i)).ok();
         });
