@@ -2,8 +2,8 @@ use rusttype::{Font, Scale};
 use std::path::Path;
 use std::process;
 
-use clap::Parser;
-use image::{GrayImage, Rgb, RgbImage};
+use clap::{Parser, ValueEnum};
+use image::{imageops, GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
 use indicatif::ParallelProgressIterator;
@@ -14,7 +14,7 @@ use ndarray::Slice;
 use ndarray_npy::read_npy;
 
 /// Convert a photon cube (npy file) to a video preview (mp4) by naively averaging frames.
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Path to photon cube (npy file)
@@ -25,9 +25,24 @@ struct Args {
     #[arg(short, long, default_value_t = 256)]
     burst_size: usize,
 
+    /// Apply transformations to each frame
+    #[arg(short, long, value_enum, num_args(0..))]
+    transform: Vec<Transform>,
+
     /// If enabled, add bitplane indices to images
     #[arg(short, long, action)]
     annotate: bool,
+}
+
+// #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
+#[derive(ValueEnum, Clone, Copy, Debug)]
+enum Transform {
+    Identity,
+    Rot90,
+    Rot180,
+    Rot270,
+    FlipUD,
+    FlipLR,
 }
 
 #[allow(dead_code)]
@@ -78,6 +93,22 @@ fn annotate(frame: &mut RgbImage, text: &str) {
     text_size(scale, &font, text);
 }
 
+fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
+    let mut frame = frame;
+
+    for t in transform.iter() {
+        frame = match t {
+            Transform::Identity => continue,
+            Transform::Rot90 => imageops::rotate90(&frame),
+            Transform::Rot180 => imageops::rotate180(&frame),
+            Transform::Rot270 => imageops::rotate270(&frame),
+            Transform::FlipUD => imageops::flip_vertical(&frame),
+            Transform::FlipLR => imageops::flip_horizontal(&frame),
+        };
+    }
+    frame
+}
+
 fn main() {
     // Parse arguments defined in struct
     let args = Args::parse();
@@ -117,7 +148,8 @@ fn main() {
             // Convert to float and normalize by burst_size, then convert to img
             let frame = frame.mapv(|x| x as f32) / (args.burst_size as f32) * 255.0;
             let frame = frame.mapv(|x| x as u8);
-            let mut frame = array2image(&frame);
+            let frame = array2image(&frame);
+            let mut frame = apply_transform(frame, &args.transform);
 
             if args.annotate {
                 annotate(
