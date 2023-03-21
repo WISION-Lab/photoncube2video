@@ -35,7 +35,7 @@ struct Args {
     out_path: String,
 
     /// Path of color filter array to use for demosaicing
-    #[arg(short, long, default_value = None)]
+    #[arg(long, default_value = None)]
     cfa_path: Option<String>,
 
     /// Number of frames to average together
@@ -49,6 +49,10 @@ struct Args {
     /// If enabled, add bitplane indices to images
     #[arg(short, long, action)]
     annotate: bool,
+
+    /// If enabled, flip rows and crop to 254x496
+    #[arg(long, action)]
+    colorspad_fix: bool,
 }
 
 // #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -88,14 +92,18 @@ fn unpack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Array2<u8> {
     unpacked_bitplane
 }
 
-fn array2image(frame: &Array2<u8>) -> RgbImage {
-    // Create garyscale image
-    let img = GrayImage::from_raw(
+fn array2grayimage(frame: Array2<u8>) -> GrayImage {
+    GrayImage::from_raw(
         frame.len_of(Axis(1)) as u32,
         frame.len_of(Axis(0)) as u32,
-        frame.as_slice().unwrap().to_vec(),
+        frame.into_raw_vec(),
     )
-    .unwrap();
+    .unwrap()
+}
+
+fn array2rgbimage(frame: Array2<u8>) -> RgbImage {
+    // Create grayscale image
+    let img = array2grayimage(frame);
 
     // Convert it to rgb by duplicating each pixel
     map_pixels(&img, |_x, _y, p| Rgb([p[0], p[0], p[0]]))
@@ -127,18 +135,27 @@ fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
     frame
 }
 
-fn process_colorspad(frame: &mut RgbImage) -> RgbImage {
-    // p = p[..., 2:, :496].to(torch.float32)
-    // p[..., :, 252:264] = p[..., :, [260, 261, 262, 263, 256, 257, 258, 259, 252, 253, 254, 255]]
-
+fn process_colorspad(mut frame: Array2<u8>) -> Array2<u8> {
     // Crop dead regions around edges
-    imageops::crop(frame, 0, 2, 496, 255).to_image()
+    let mut crop = frame.slice_mut(s![2.., ..496]);
+
+    // Swap rows (Can we do this inplace?)
+    let (mut slice_a, mut slice_b) = crop.multi_slice_mut((s![.., 252..256], s![.., 260..264]));
+    let tmp_slice = slice_a.to_owned();
+    slice_a.assign(&slice_b);
+    slice_b.assign(&tmp_slice);
+
+    // This clones the array, can we avoid this somehow??
+    crop.to_owned()
 }
 
+// Note: The use of generics here is heavy handed, we only really want this function
+//       to work with T=u8 or maybe T=f32/i32. Is there a better way? I.e generic over primitives?
 fn interpolate_where_mask<T>(frame: &Array2<T>, mask: &Array2<bool>, dither: bool) -> Array2<T>
 where
-    T: From<bool> + Into<f32> + Copy + 'static,
+    T: Into<f32> + Copy + 'static,
     f32: AsPrimitive<T>,
+    bool: AsPrimitive<T>,
 {
     let mut rng = rand::thread_rng();
 
@@ -161,7 +178,7 @@ where
             }
 
             if dither {
-                (rng.gen_range(0.0..1.0) < (value / counter)).into()
+                (rng.gen_range(0.0..1.0) < (value / counter)).as_()
             } else {
                 ((value / counter).round()).as_()
             }
@@ -235,7 +252,11 @@ fn main() -> Result<()> {
 
             // Convert to float and normalize by burst_size, then convert to img
             let frame = frame.mapv(|x| x as f32) / (args.burst_size as f32) * 255.0;
-            let frame = frame.mapv(|x| x as u8);
+            let mut frame = frame.mapv(|x| x as u8);
+
+            if args.colorspad_fix {
+                frame = process_colorspad(frame);
+            }
 
             let frame = if let Some(mask) = &cfa_mask {
                 interpolate_where_mask(&frame, mask, false)
@@ -243,8 +264,7 @@ fn main() -> Result<()> {
                 frame
             };
 
-            let mut frame = array2image(&frame);
-            let frame = process_colorspad(&mut frame);
+            let frame = array2rgbimage(frame);
             let mut frame = apply_transform(frame, &args.transform);
 
             if args.annotate {
