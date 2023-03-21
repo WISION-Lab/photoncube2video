@@ -1,9 +1,13 @@
+use rand::Rng;
 use rusttype::{Font, Scale};
+use std::convert::{From, Into};
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::process;
 
+use anyhow::Result;
 use clap::{Parser, ValueEnum};
+use image::io::Reader as ImageReader;
 use image::{imageops, GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
@@ -12,7 +16,11 @@ use indicatif::{ParallelProgressIterator, ProgressStyle};
 use ndarray::parallel::prelude::*;
 use ndarray::prelude::*;
 use ndarray::Slice;
+
 use ndarray_npy::read_npy;
+
+use nshare::ToNdarray3;
+use num_traits::AsPrimitive;
 
 /// Convert a photon cube (npy file) to a video preview (mp4) by naively averaging frames.
 #[derive(Parser)]
@@ -22,8 +30,13 @@ struct Args {
     #[arg(short, long)]
     npy_path: String,
 
+    /// Output directory to save PNGs in
     #[arg(short, long, default_value = "frames/")]
     out_path: String,
+
+    /// Path of color filter array to use for demosaicing
+    #[arg(short, long, default_value = None)]
+    cfa_path: Option<String>,
 
     /// Number of frames to average together
     #[arg(short, long, default_value_t = 256)]
@@ -114,7 +127,51 @@ fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
     frame
 }
 
-fn main() {
+fn process_colorspad(frame: &mut RgbImage) -> RgbImage {
+    // p = p[..., 2:, :496].to(torch.float32)
+    // p[..., :, 252:264] = p[..., :, [260, 261, 262, 263, 256, 257, 258, 259, 252, 253, 254, 255]]
+
+    // Crop dead regions around edges
+    imageops::crop(frame, 0, 2, 496, 255).to_image()
+}
+
+fn interpolate_where_mask<T>(frame: &Array2<T>, mask: &Array2<bool>, dither: bool) -> Array2<T>
+where
+    T: From<bool> + Into<f32> + Copy + 'static,
+    f32: AsPrimitive<T>,
+{
+    let mut rng = rand::thread_rng();
+
+    Array2::from_shape_fn(frame.dim(), |(i, j)| {
+        if mask[(i, j)] {
+            let mut counter = 0.0;
+            let mut value = 0.0;
+
+            for ki in [i - 1, i + 1] {
+                if let Some(v) = frame.get((ki, j)) {
+                    counter += 1.0;
+                    value += T::into(*v);
+                }
+            }
+            for kj in [j - 1, j + 1] {
+                if let Some(v) = frame.get((i, kj)) {
+                    counter += 1.0;
+                    value += T::into(*v);
+                }
+            }
+
+            if dither {
+                (rng.gen_range(0.0..1.0) < (value / counter)).into()
+            } else {
+                ((value / counter).round()).as_()
+            }
+        } else {
+            frame[(i, j)]
+        }
+    })
+}
+
+fn main() -> Result<()> {
     // Parse arguments defined in struct
     let args = Args::parse();
 
@@ -128,6 +185,24 @@ fn main() {
     // Read in the npy file, we expext it to have ndim==3, and of type u8, error if it is not.
     let cube: Array3<u8> = read_npy(args.npy_path).unwrap();
     let t = cube.len_of(Axis(0)) as u64;
+
+    // It would be much nice to be able to use Option.map here but then
+    // we cannot use the `?` operator as it would be inside a closure
+    // which does not return a Result type...
+    let cfa_mask: Option<Array2<bool>> = match args.cfa_path {
+        Some(cfa_path) => {
+            let cfa_mask: Array2<bool> = ImageReader::open(cfa_path)?
+                .decode()?
+                .into_rgb8()
+                .into_ndarray3()
+                .mapv(|v| v == 0)
+                .map_axis(Axis(0), |p| {
+                    p.to_vec().into_iter().reduce(|a, b| a | b).unwrap()
+                });
+            Some(cfa_mask)
+        }
+        None => None,
+    };
 
     // Create chunked iterator over all data
     let groups = cube.axis_chunks_iter(Axis(0), args.burst_size);
@@ -161,7 +236,15 @@ fn main() {
             // Convert to float and normalize by burst_size, then convert to img
             let frame = frame.mapv(|x| x as f32) / (args.burst_size as f32) * 255.0;
             let frame = frame.mapv(|x| x as u8);
-            let frame = array2image(&frame);
+
+            let frame = if let Some(mask) = &cfa_mask {
+                interpolate_where_mask(&frame, mask, false)
+            } else {
+                frame
+            };
+
+            let mut frame = array2image(&frame);
+            let frame = process_colorspad(&mut frame);
             let mut frame = apply_transform(frame, &args.transform);
 
             if args.annotate {
@@ -183,5 +266,5 @@ fn main() {
         });
 
     // Return successful!
-    process::exit(exitcode::OK)
+    Ok(())
 }
