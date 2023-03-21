@@ -12,6 +12,7 @@ use image::{imageops, GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use tempfile::tempdir;
 
 use ffmpeg_sidecar::command::{ffmpeg_is_installed, FfmpegCommand};
 use ffmpeg_sidecar::paths::sidecar_dir;
@@ -29,11 +30,15 @@ use num_traits::AsPrimitive;
 struct Args {
     /// Path to photon cube (npy file)
     #[arg(short, long)]
-    npy_path: String,
+    input: String,
+
+    /// Path of output video
+    #[arg(short, long, default_value = "out.mp4")]
+    output: String,
 
     /// Output directory to save PNGs in
-    #[arg(short, long, default_value = "frames/")]
-    out_path: String,
+    #[arg(long)]
+    img_dir: Option<String>,
 
     /// Path of color filter array to use for demosaicing
     #[arg(long, default_value = None)]
@@ -59,7 +64,7 @@ struct Args {
     #[arg(short, long, action)]
     annotate: bool,
 
-    /// If enabled, flip rows and crop to 254x496
+    /// If enabled, swap columns and crop to 254x496
     #[arg(long, action)]
     colorspad_fix: bool,
 }
@@ -211,14 +216,19 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Error out if the numpy file does not exist
-    if !Path::new(&args.npy_path).exists() {
-        eprintln!("Photon cube data not found at {}!", args.npy_path);
+    if !Path::new(&args.input).exists() {
+        eprintln!("Photon cube data not found at {}!", args.input);
         process::exit(exitcode::OSFILE);
     }
-    create_dir_all(&args.out_path).ok();
+
+    // Get img path or tempdir, ensure it exists.
+    let img_dir = args
+        .img_dir
+        .unwrap_or(tempdir()?.path().to_str().unwrap().to_owned());
+    create_dir_all(&img_dir).ok();
 
     // Read in the npy file, we expext it to have ndim==3, and of type u8, error if it is not.
-    let cube: Array3<u8> = read_npy(args.npy_path).unwrap();
+    let cube: Array3<u8> = read_npy(args.input).unwrap();
     let t = cube.len_of(Axis(0)) as u64;
 
     // It would be much nice to be able to use Option.map here but then
@@ -311,7 +321,7 @@ fn main() -> Result<()> {
     let num_frames = frames
         .map(|(i, frame)| {
             // Throw error if we cannot save.
-            let path = Path::new(&args.out_path).join(format!("frame{:06}.png", i));
+            let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             frame
                 .save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
@@ -323,19 +333,20 @@ fn main() -> Result<()> {
     let cmd = format!(
         concat!(
             "-framerate {fps} -f image2 -i {pattern} ",
-            "-y -vcodec libx264 -crf 22 -pix_fmt yuv420p out.mp4"
+            "-y -vcodec libx264 -crf 22 -pix_fmt yuv420p {outfile}"
         ),
         fps = args.fps,
-        pattern = Path::new(&args.out_path).join("frame%06d.png").display()
+        pattern = Path::new(&img_dir).join("frame%06d.png").display(),
+        outfile = args.output
     );
 
-    let mut output = FfmpegCommand::new().args(cmd.split(' ')).spawn().unwrap();
-    output
+    let mut ffmpeg_runner = FfmpegCommand::new().args(cmd.split(' ')).spawn().unwrap();
+    ffmpeg_runner
         .iter()
         .unwrap()
         .filter_progress()
         .for_each(|progress| pbar.set_position(progress.frame as u64));
-    pbar.finish();
+    pbar.finish_and_clear();
 
     // Return successful!
     Ok(())
