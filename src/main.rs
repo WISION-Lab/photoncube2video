@@ -11,14 +11,15 @@ use image::io::Reader as ImageReader;
 use image::{imageops, GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
-use indicatif::{ParallelProgressIterator, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+
+use ffmpeg_sidecar::command::{ffmpeg_is_installed, FfmpegCommand};
+use ffmpeg_sidecar::paths::sidecar_dir;
 
 use ndarray::parallel::prelude::*;
 use ndarray::prelude::*;
 use ndarray::Slice;
-
 use ndarray_npy::read_npy;
-
 use nshare::ToNdarray3;
 use num_traits::AsPrimitive;
 
@@ -38,9 +39,17 @@ struct Args {
     #[arg(long, default_value = None)]
     cfa_path: Option<String>,
 
+    /// Path of inpainting mask to use for filtering out dead/hot pixels
+    #[arg(long, default_value = None)]
+    inpaint_path: Option<String>,
+
     /// Number of frames to average together
     #[arg(short, long, default_value_t = 256)]
     burst_size: usize,
+
+    /// Frame rate of resulting video
+    #[arg(long, default_value_t = 25)]
+    fps: usize,
 
     /// Apply transformations to each frame
     #[arg(short, long, value_enum, num_args(0..))]
@@ -158,22 +167,23 @@ where
     bool: AsPrimitive<T>,
 {
     let mut rng = rand::thread_rng();
+    let (h, w) = frame.dim();
 
-    Array2::from_shape_fn(frame.dim(), |(i, j)| {
+    Array2::from_shape_fn((h, w), |(i, j)| {
         if mask[(i, j)] {
             let mut counter = 0.0;
             let mut value = 0.0;
 
-            for ki in [i - 1, i + 1] {
-                if let Some(v) = frame.get((ki, j)) {
+            for ki in [(i as isize) - 1, (i as isize) + 1] {
+                if (ki >= 0) && (ki < h as isize) {
                     counter += 1.0;
-                    value += T::into(*v);
+                    value += T::into(frame[(ki as usize, j)]);
                 }
             }
-            for kj in [j - 1, j + 1] {
-                if let Some(v) = frame.get((i, kj)) {
+            for kj in [(j as isize) - 1, (j as isize) + 1] {
+                if (kj >= 0) && (kj < w as isize) {
                     counter += 1.0;
-                    value += T::into(*v);
+                    value += T::into(frame[(i, kj as usize)]);
                 }
             }
 
@@ -189,6 +199,14 @@ where
 }
 
 fn main() -> Result<()> {
+    if !ffmpeg_is_installed() {
+        println!(
+            "No ffmpeg installation found, downloading one to {}...",
+            &sidecar_dir().unwrap().display()
+        );
+        ffmpeg_sidecar::download::auto_download().unwrap();
+    }
+
     // Parse arguments defined in struct
     let args = Args::parse();
 
@@ -220,25 +238,24 @@ fn main() -> Result<()> {
         }
         None => None,
     };
+    let inpaint_mask: Option<Array2<bool>> = args.inpaint_path.map(|p| read_npy(p).unwrap());
 
-    // Create chunked iterator over all data
+    // // Create chunked iterator over all data
     let groups = cube.axis_chunks_iter(Axis(0), args.burst_size);
     let pbar_style = ProgressStyle::with_template(
         "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
     )
     .unwrap();
 
-    // Functional style loop over all chunks of frames
-    // The for-loop body is an anonymous function allowing it to be called
-    // by mutyiple threads in parallel.
-    groups
+    // Create parallel iterator over all chunks of frames and process them
+    let frames = groups
         // Make it parallel
         .into_par_iter()
         // Add progress bar
         .progress_count(t / args.burst_size as u64)
-        .with_style(pbar_style)
+        .with_style(pbar_style.clone())
         .enumerate()
-        .for_each(|(i, group)| {
+        .map(|(i, group)| {
             let frame = group
                 // Unpack every frame in group
                 .axis_iter(Axis(0))
@@ -254,36 +271,71 @@ fn main() -> Result<()> {
             let frame = frame.mapv(|x| x as f32) / (args.burst_size as f32) * 255.0;
             let mut frame = frame.mapv(|x| x as u8);
 
+            // Apply any frame-level fixes (only for ColorSPAD at the moment)
             if args.colorspad_fix {
                 frame = process_colorspad(frame);
             }
 
+            // Demosaic frame by interpolating white pixels
             let frame = if let Some(mask) = &cfa_mask {
                 interpolate_where_mask(&frame, mask, false)
             } else {
                 frame
             };
 
+            // Inpaint any hot/dead pixels
+            let frame = if let Some(mask) = &inpaint_mask {
+                interpolate_where_mask(&frame, mask, false)
+            } else {
+                frame
+            };
+
+            // Convert to image and rotate/flip as needed
             let frame = array2rgbimage(frame);
             let mut frame = apply_transform(frame, &args.transform);
 
             if args.annotate {
-                annotate(
-                    &mut frame,
-                    &format!(
-                        "{:06}:{:06}",
-                        i * args.burst_size,
-                        (i + 1) * args.burst_size
-                    ),
+                let text = format!(
+                    "{:06}:{:06}",
+                    i * args.burst_size,
+                    (i + 1) * args.burst_size
                 );
+                annotate(&mut frame, &text);
             }
 
+            // Return both the frame and it's index so we can later save
+            (i, frame)
+        });
+
+    // Save and count frames, this consumes/runs the above iterator
+    let num_frames = frames
+        .map(|(i, frame)| {
             // Throw error if we cannot save.
             let path = Path::new(&args.out_path).join(format!("frame{:06}.png", i));
             frame
                 .save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
-        });
+        })
+        .count();
+
+    // Finally, make a call to ffmpeg to assemble to video
+    let pbar = ProgressBar::new(num_frames as u64).with_style(pbar_style);
+    let cmd = format!(
+        concat!(
+            "-framerate {fps} -f image2 -i {pattern} ",
+            "-y -vcodec libx264 -crf 22 -pix_fmt yuv420p out.mp4"
+        ),
+        fps = args.fps,
+        pattern = Path::new(&args.out_path).join("frame%06d.png").display()
+    );
+
+    let mut output = FfmpegCommand::new().args(cmd.split(' ')).spawn().unwrap();
+    output
+        .iter()
+        .unwrap()
+        .filter_progress()
+        .for_each(|progress| pbar.set_position(progress.frame as u64));
+    pbar.finish();
 
     // Return successful!
     Ok(())
