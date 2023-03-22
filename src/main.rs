@@ -105,7 +105,7 @@ fn process_colorspad(mut frame: Array2<u8>) -> Array2<u8> {
 
 // Note: The use of generics here is heavy handed, we only really want this function
 //       to work with T=u8 or maybe T=f32/i32. Is there a better way? I.e generic over primitives?
-fn interpolate_where_mask<T>(frame: &Array2<T>, mask: &Array2<bool>, dither: bool) -> Array2<T>
+fn interpolate_where_mask<T>(frame: Array2<T>, mask: &Array2<bool>, dither: bool) -> Array2<T>
 where
     T: Into<f32> + Copy + 'static,
     f32: AsPrimitive<T>,
@@ -148,17 +148,9 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load all the neccesary files
-    let cube: Array3<u8> = try_load(Some(args.input))?.unwrap();
-    let inpaint_mask: Option<Array2<bool>> = try_load(args.inpaint_path)?.map(|arr| {
-        arr.into_dimensionality()
-            .expect("Mask should be 2D")
-            .mapv(|v| v != 0)
-    });
-    let cfa_mask: Option<Array2<bool>> = try_load(args.cfa_path)?.map(|arr: Array3<u8>| {
-        arr.mapv(|v: u8| v == 0).map_axis(Axis(0), |p| {
-            p.to_vec().into_iter().reduce(|a, b| a | b).unwrap()
-        })
-    });
+    let cube: Array3<u8> = try_load_cube(Some(args.input))?.unwrap();
+    let inpaint_mask: Option<Array2<bool>> = try_load_mask(args.inpaint_path)?;
+    let cfa_mask: Option<Array2<bool>> = try_load_mask(args.cfa_path)?;
     ensure_ffmpeg(true);
 
     // Get img path or tempdir, ensure it exists.
@@ -187,15 +179,15 @@ fn main() -> Result<()> {
                 // Unpack every frame in group
                 .axis_iter(Axis(0))
                 .map(|bitplane| unpack_single(&bitplane, 1))
-                // Convert all frames to i32 to avoid overflows when summing
-                .map(|bitplane| bitplane.mapv(|x| x as i32))
+                // Convert all frames to f32 to avoid overflows when summing
+                .map(|bitplane| bitplane.mapv(|x| x as f32))
                 // Sum frames together, use reduce not `.sum` as it's not
-                // implemented for this type.
+                // implemented for this type, maybe use `accumulate_axis_inplace`
                 .reduce(|acc, e| acc + e)
                 .unwrap();
 
-            // Convert to float and normalize by burst_size, then convert to img
-            let frame = frame.mapv(|x| x as f32) / (args.burst_size as f32) * 255.0;
+            // Normalize by burst_size, then convert to u8
+            let frame = frame / (args.burst_size as f32) * 255.0;
             let mut frame = frame.mapv(|x| x as u8);
 
             // Apply any frame-level fixes (only for ColorSPAD at the moment)
@@ -204,21 +196,17 @@ fn main() -> Result<()> {
             }
 
             // Demosaic frame by interpolating white pixels
-            let frame = if let Some(mask) = &cfa_mask {
-                interpolate_where_mask(&frame, mask, false)
-            } else {
-                frame
-            };
+            if let Some(mask) = &cfa_mask {
+                frame = interpolate_where_mask(frame, mask, false)
+            }
 
             // Inpaint any hot/dead pixels
-            let frame = if let Some(mask) = &inpaint_mask {
-                interpolate_where_mask(&frame, mask, false)
-            } else {
-                frame
-            };
+            if let Some(mask) = &inpaint_mask {
+                frame = interpolate_where_mask(frame, mask, false)
+            }
 
             // Convert to image and rotate/flip as needed
-            let frame = array2rgbimage(frame);
+            let frame = array2rgbimage(frame.to_owned());
             let mut frame = apply_transform(frame, &args.transform);
 
             if args.annotate {
@@ -254,6 +242,5 @@ fn main() -> Result<()> {
         Some(pbar_style),
     );
 
-    // Return successful!
     Ok(())
 }

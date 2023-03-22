@@ -5,7 +5,7 @@ pub use std::path::Path;
 
 use image::io::Reader as ImageReader;
 use ndarray_npy::read_npy;
-use nshare::ToNdarray3;
+use nshare::ToNdarray2;
 
 use ffmpeg_sidecar::command::{ffmpeg_is_installed, FfmpegCommand};
 use ffmpeg_sidecar::paths::sidecar_dir;
@@ -52,7 +52,32 @@ pub fn make_video(
 /// Given an Option of a path, try to load the image or npy file at that path
 /// and return it as a Result of an Option of array. Bubble up any io errors.  
 /// Currently only supports RGB8-type images.
-pub fn try_load(path: Option<String>) -> Result<Option<Array3<u8>>> {
+pub fn try_load_cube(path: Option<String>) -> Result<Option<Array3<u8>>> {
+    if path.is_none() {
+        return Ok(None);
+    }
+
+    let path_str = path.unwrap();
+    let path = Path::new(&path_str);
+    let ext = path.extension().unwrap().to_ascii_lowercase();
+
+    if !path.exists() {
+        // This should probably be a specific IO error?
+        Err(anyhow!("File not found at {}!", path_str))
+    } else if ext != "npy" && ext != "npz" {
+        Err(anyhow!(
+            "Expexted numpy array with extension `npy` or `npz`, got {:?}.",
+            ext
+        ))
+    } else {
+        let arr: Array3<u8> = read_npy(path_str)?;
+        Ok(Some(arr))
+    }
+}
+
+/// Load either a 2D NPY file or an intensity-only image file as an array of booleans.
+/// For the image, any pure white pixels are false, all others are true.
+pub fn try_load_mask(path: Option<String>) -> Result<Option<Array2<bool>>> {
     if path.is_none() {
         return Ok(None);
     }
@@ -65,13 +90,14 @@ pub fn try_load(path: Option<String>) -> Result<Option<Array3<u8>>> {
         // This should probably be a specific IO error?
         Err(anyhow!("File not found at {}!", path_str))
     } else if ext == "npy" || ext == "npz" {
-        let arr = read_npy::<std::string::String, Array3<u8>>(path_str)?.into_dimensionality()?;
+        let arr: Array2<bool> = read_npy(path_str)?;
         Ok(Some(arr))
     } else {
         let arr = ImageReader::open(path_str)?
             .decode()?
-            .into_rgb8()
-            .into_ndarray3();
+            .into_luma8()
+            .into_ndarray2()
+            .mapv(|v| v != 0);
         Ok(Some(arr))
     }
 }
