@@ -15,7 +15,6 @@ imageproc = "0.23.0"
 indicatif = {version = "*", features = ["rayon"]}
 itertools = "0.10.5"
 ndarray = { version = "0.15.6", features = ["rayon"] }
-ndarray-ndimage = "0.3.0"
 ndarray-npy = "0.8.1"
 nshare = "0.9.0"
 num-traits = "0.2.15"

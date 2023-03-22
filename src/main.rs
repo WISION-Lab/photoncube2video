@@ -2,83 +2,23 @@ use rand::Rng;
 use rusttype::{Font, Scale};
 use std::convert::{From, Into};
 use std::fs::create_dir_all;
-use std::path::Path;
 use std::process;
 
-use anyhow::Result;
-use clap::{Parser, ValueEnum};
-use image::io::Reader as ImageReader;
 use image::{imageops, GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
 use imageproc::map::map_pixels;
-use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use indicatif::{ParallelProgressIterator, ProgressStyle};
 use tempfile::tempdir;
 
-use ffmpeg_sidecar::command::{ffmpeg_is_installed, FfmpegCommand};
-use ffmpeg_sidecar::paths::sidecar_dir;
-
 use ndarray::parallel::prelude::*;
-use ndarray::prelude::*;
 use ndarray::Slice;
-use ndarray_npy::read_npy;
-use nshare::ToNdarray3;
 use num_traits::AsPrimitive;
 
-/// Convert a photon cube (npy file) to a video preview (mp4) by naively averaging frames.
-#[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Path to photon cube (npy file)
-    #[arg(short, long)]
-    input: String,
+use crate::cli::*;
+mod cli;
 
-    /// Path of output video
-    #[arg(short, long, default_value = "out.mp4")]
-    output: String,
-
-    /// Output directory to save PNGs in
-    #[arg(long)]
-    img_dir: Option<String>,
-
-    /// Path of color filter array to use for demosaicing
-    #[arg(long, default_value = None)]
-    cfa_path: Option<String>,
-
-    /// Path of inpainting mask to use for filtering out dead/hot pixels
-    #[arg(long, default_value = None)]
-    inpaint_path: Option<String>,
-
-    /// Number of frames to average together
-    #[arg(short, long, default_value_t = 256)]
-    burst_size: usize,
-
-    /// Frame rate of resulting video
-    #[arg(long, default_value_t = 25)]
-    fps: usize,
-
-    /// Apply transformations to each frame
-    #[arg(short, long, value_enum, num_args(0..))]
-    transform: Vec<Transform>,
-
-    /// If enabled, add bitplane indices to images
-    #[arg(short, long, action)]
-    annotate: bool,
-
-    /// If enabled, swap columns and crop to 254x496
-    #[arg(long, action)]
-    colorspad_fix: bool,
-}
-
-// #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
-#[derive(ValueEnum, Clone, Copy, Debug)]
-enum Transform {
-    Identity,
-    Rot90,
-    Rot180,
-    Rot270,
-    FlipUD,
-    FlipLR,
-}
+use crate::io::*;
+mod io;
 
 #[allow(dead_code)]
 fn print_type_of<T>(_: &T) {
@@ -95,7 +35,7 @@ fn unpack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Array2<u8> {
     let mut unpacked_bitplane = Array2::<u8>::zeros((h, w));
 
     // Iterate through slices with stride 8 of the full array and fill it up
-    // Note: We reverse the shift to account for LSB/MSB
+    // Note: We reverse the shift to account for endianness
     for shift in 0..8 {
         let ishift = 7 - shift;
         let mut slice =
@@ -133,7 +73,7 @@ fn annotate(frame: &mut RgbImage, text: &str) {
 }
 
 fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
-    // Not if we don't shadow `frame` as a mut, we cannot override it in the loop
+    // Note: if we don't shadow `frame` as a mut, we cannot override it in the loop
     let mut frame = frame;
 
     for t in transform.iter() {
@@ -204,51 +144,28 @@ where
 }
 
 fn main() -> Result<()> {
-    if !ffmpeg_is_installed() {
-        println!(
-            "No ffmpeg installation found, downloading one to {}...",
-            &sidecar_dir().unwrap().display()
-        );
-        ffmpeg_sidecar::download::auto_download().unwrap();
-    }
-
     // Parse arguments defined in struct
     let args = Args::parse();
 
-    // Error out if the numpy file does not exist
-    if !Path::new(&args.input).exists() {
-        eprintln!("Photon cube data not found at {}!", args.input);
-        process::exit(exitcode::OSFILE);
-    }
+    // Load all the neccesary files
+    let cube: Array3<u8> = try_load(Some(args.input))?.unwrap();
+    let inpaint_mask: Option<Array2<bool>> = try_load(args.inpaint_path)?.map(|arr| {
+        arr.into_dimensionality()
+            .expect("Mask should be 2D")
+            .mapv(|v| v != 0)
+    });
+    let cfa_mask: Option<Array2<bool>> = try_load(args.cfa_path)?.map(|arr: Array3<u8>| {
+        arr.mapv(|v: u8| v == 0).map_axis(Axis(0), |p| {
+            p.to_vec().into_iter().reduce(|a, b| a | b).unwrap()
+        })
+    });
+    ensure_ffmpeg(true);
 
     // Get img path or tempdir, ensure it exists.
     let img_dir = args
         .img_dir
         .unwrap_or(tempdir()?.path().to_str().unwrap().to_owned());
     create_dir_all(&img_dir).ok();
-
-    // Read in the npy file, we expext it to have ndim==3, and of type u8, error if it is not.
-    let cube: Array3<u8> = read_npy(args.input).unwrap();
-    let t = cube.len_of(Axis(0)) as u64;
-
-    // It would be much nice to be able to use Option.map here but then
-    // we cannot use the `?` operator as it would be inside a closure
-    // which does not return a Result type...
-    let cfa_mask: Option<Array2<bool>> = match args.cfa_path {
-        Some(cfa_path) => {
-            let cfa_mask: Array2<bool> = ImageReader::open(cfa_path)?
-                .decode()?
-                .into_rgb8()
-                .into_ndarray3()
-                .mapv(|v| v == 0)
-                .map_axis(Axis(0), |p| {
-                    p.to_vec().into_iter().reduce(|a, b| a | b).unwrap()
-                });
-            Some(cfa_mask)
-        }
-        None => None,
-    };
-    let inpaint_mask: Option<Array2<bool>> = args.inpaint_path.map(|p| read_npy(p).unwrap());
 
     // // Create chunked iterator over all data
     let groups = cube.axis_chunks_iter(Axis(0), args.burst_size);
@@ -262,7 +179,7 @@ fn main() -> Result<()> {
         // Make it parallel
         .into_par_iter()
         // Add progress bar
-        .progress_count(t / args.burst_size as u64)
+        .progress_count(cube.len_of(Axis(0)) as u64 / args.burst_size as u64)
         .with_style(pbar_style.clone())
         .enumerate()
         .map(|(i, group)| {
@@ -329,24 +246,13 @@ fn main() -> Result<()> {
         .count();
 
     // Finally, make a call to ffmpeg to assemble to video
-    let pbar = ProgressBar::new(num_frames as u64).with_style(pbar_style);
-    let cmd = format!(
-        concat!(
-            "-framerate {fps} -f image2 -i {pattern} ",
-            "-y -vcodec libx264 -crf 22 -pix_fmt yuv420p {outfile}"
-        ),
-        fps = args.fps,
-        pattern = Path::new(&img_dir).join("frame%06d.png").display(),
-        outfile = args.output
+    make_video(
+        Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
+        &args.output,
+        args.fps,
+        num_frames as u64,
+        Some(pbar_style),
     );
-
-    let mut ffmpeg_runner = FfmpegCommand::new().args(cmd.split(' ')).spawn().unwrap();
-    ffmpeg_runner
-        .iter()
-        .unwrap()
-        .filter_progress()
-        .for_each(|progress| pbar.set_position(progress.frame as u64));
-    pbar.finish_and_clear();
 
     // Return successful!
     Ok(())
