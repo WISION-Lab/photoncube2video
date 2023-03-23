@@ -149,7 +149,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load all the neccesary files
-    let cube: Array3<u8> = try_load_cube(args.input)?;
+    let cube: Array3<u8> = try_load_cube(args.input, Some((256, 512)))?;
     let inpaint_mask: Option<Array2<bool>> = try_load_mask(args.inpaint_path)?;
     let cfa_mask: Option<Array2<bool>> = try_load_mask(args.cfa_path)?;
     ensure_ffmpeg(true);

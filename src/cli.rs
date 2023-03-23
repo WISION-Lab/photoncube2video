@@ -1,10 +1,10 @@
 pub use clap::{Parser, ValueEnum};
 
-/// Convert a photon cube (npy file) to a video preview (mp4) by naively averaging frames.
+/// Convert a photon cube (npy file/directory of bin files) to a video preview (mp4) by naively averaging frames.
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// Path to photon cube (npy file)
+    /// Path to photon cube (npy file or directory of .bin files)
     #[arg(short, long)]
     pub input: String,
 
@@ -32,7 +32,7 @@ pub struct Args {
     #[arg(long, default_value_t = 25)]
     pub fps: u64,
 
-    /// Apply transformations to each frame
+    /// Apply transformations to each frame (these can be composed)
     #[arg(short, long, value_enum, num_args(0..))]
     pub transform: Vec<Transform>,
 

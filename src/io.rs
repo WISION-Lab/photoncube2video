@@ -56,15 +56,20 @@ pub fn make_video(
 /// Given an Option of a path, try to load the image or npy file at that path
 /// and return it as a Result of an Option of array. Bubble up any io errors.  
 /// Currently only supports RGB8-type images.
-pub fn try_load_cube(path_str: String) -> Result<Array3<u8>> {
+pub fn try_load_cube(path_str: String, shape: Option<(usize, usize)>) -> Result<Array3<u8>> {
     let path = Path::new(&path_str);
 
     if !path.exists() {
         // This should probably be a specific IO error?
         Err(anyhow!("File not found at {}!", path_str))
     } else if path.is_dir() {
-        println!("Checking files in {:?}", path_str);
+        let (h, w) = shape.expect("Must specify shape if reading from .bin files");
         let paths = sorted_glob(path, "**/*.bin")?;
+
+        if paths.is_empty() {
+            return Err(anyhow!("No .bin files found in {}!", path_str));
+        }
+
         let mut buffer = Vec::new();
 
         for p in paths {
@@ -72,13 +77,14 @@ pub fn try_load_cube(path_str: String) -> Result<Array3<u8>> {
             f.read_to_end(&mut buffer)?;
         }
 
-        let t = buffer.len() / (256 * 64);
-        let arr = Array::from_vec(buffer).into_shape((t, 256, 64))?;
+        let t = buffer.len() / (h * w / 8);
+        let arr = Array::from_vec(buffer).into_shape((t, h, w / 8))?;
         Ok(arr.mapv(|v| v.reverse_bits()))
     } else {
         let ext = path.extension().unwrap().to_ascii_lowercase();
 
         if ext != "npy" && ext != "npz" {
+            // This should probably be a specific IO error?
             Err(anyhow!(
                 "Expexted numpy array with extension `npy` or `npz`, got {:?}.",
                 ext
@@ -91,7 +97,9 @@ pub fn try_load_cube(path_str: String) -> Result<Array3<u8>> {
 }
 
 /// Load either a 2D NPY file or an intensity-only image file as an array of booleans.
-/// For the image, any pure white pixels are false, all others are true.
+/// Note: For the image, any pure white pixels are false, all others are true.
+///       This is contrary to what you might expect but enables us to load in the 
+///       colorSPAD's cfa array and have a mask representing the colored pixels.
 pub fn try_load_mask(path: Option<String>) -> Result<Option<Array2<bool>>> {
     if path.is_none() {
         return Ok(None);
