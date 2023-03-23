@@ -98,7 +98,7 @@ pub fn try_load_cube(path_str: String, shape: Option<(usize, usize)>) -> Result<
 
 /// Load either a 2D NPY file or an intensity-only image file as an array of booleans.
 /// Note: For the image, any pure white pixels are false, all others are true.
-///       This is contrary to what you might expect but enables us to load in the 
+///       This is contrary to what you might expect but enables us to load in the
 ///       colorSPAD's cfa array and have a mask representing the colored pixels.
 pub fn try_load_mask(path: Option<String>) -> Result<Option<Array2<bool>>> {
     if path.is_none() {
@@ -124,19 +124,3 @@ pub fn try_load_mask(path: Option<String>) -> Result<Option<Array2<bool>>> {
         Ok(Some(arr))
     }
 }
-
-// let cfa_mask: Option<Array2<bool>> = match args.cfa_path {
-//     Some(cfa_path) => {
-//         let cfa_mask: Array2<bool> = ImageReader::open(cfa_path)?
-//             .decode()?
-//             .into_rgb8()
-//             .into_ndarray3()
-//             .mapv(|v| v == 0)
-//             .map_axis(Axis(0), |p| {
-//                 p.to_vec().into_iter().reduce(|a, b| a | b).unwrap()
-//             });
-//         Some(cfa_mask)
-//     }
-//     None => None,
-// };
-// let inpaint_mask: Option<Array2<bool>> = args.inpaint_path.map(|p| read_npy(p).unwrap());

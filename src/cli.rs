@@ -40,9 +40,17 @@ pub struct Args {
     #[arg(short, long, action)]
     pub annotate: bool,
 
-    /// If enabled, swap columns and crop to 254x496
+    /// If enabled, swap columns that are out of order and crop to 254x496
     #[arg(long, action)]
     pub colorspad_fix: bool,
+
+    /// Index of binary frame at which to start the preview from (inclusive)
+    #[arg(short, long, default_value = None)]
+    pub start: Option<isize>,
+
+    /// Index of binary frame at which to end the preview at (exclusive)
+    #[arg(short, long, default_value = None)]
+    pub end: Option<isize>,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

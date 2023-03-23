@@ -149,7 +149,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load all the neccesary files
-    let cube: Array3<u8> = try_load_cube(args.input, Some((256, 512)))?;
+    let mut cube: Array3<u8> = try_load_cube(args.input, Some((256, 512)))?;
     let inpaint_mask: Option<Array2<bool>> = try_load_mask(args.inpaint_path)?;
     let cfa_mask: Option<Array2<bool>> = try_load_mask(args.cfa_path)?;
     ensure_ffmpeg(true);
@@ -161,6 +161,8 @@ fn main() -> Result<()> {
     create_dir_all(&img_dir).ok();
 
     // // Create chunked iterator over all data
+    let start_offset = args.start.unwrap_or(0);
+    cube.slice_axis_inplace(Axis(0), Slice::new(start_offset, args.end, 1));
     let groups = cube.axis_chunks_iter(Axis(0), args.burst_size);
     let pbar_style = ProgressStyle::with_template(
         "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
@@ -213,8 +215,8 @@ fn main() -> Result<()> {
             if args.annotate {
                 let text = format!(
                     "{:06}:{:06}",
-                    i * args.burst_size,
-                    (i + 1) * args.burst_size
+                    i * args.burst_size + (start_offset as usize),
+                    (i + 1) * args.burst_size + (start_offset as usize)
                 );
                 annotate(&mut frame, &text);
             }
