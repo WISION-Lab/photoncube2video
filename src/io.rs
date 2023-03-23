@@ -6,10 +6,14 @@ pub use std::path::Path;
 use image::io::Reader as ImageReader;
 use ndarray_npy::read_npy;
 use nshare::ToNdarray2;
+use std::fs::File;
+use std::io::prelude::*;
 
 use ffmpeg_sidecar::command::{ffmpeg_is_installed, FfmpegCommand};
 use ffmpeg_sidecar::paths::sidecar_dir;
 use indicatif::{ProgressBar, ProgressStyle};
+
+use crate::utils::sorted_glob;
 
 pub fn ensure_ffmpeg(verbose: bool) {
     if !ffmpeg_is_installed() {
@@ -52,26 +56,37 @@ pub fn make_video(
 /// Given an Option of a path, try to load the image or npy file at that path
 /// and return it as a Result of an Option of array. Bubble up any io errors.  
 /// Currently only supports RGB8-type images.
-pub fn try_load_cube(path: Option<String>) -> Result<Option<Array3<u8>>> {
-    if path.is_none() {
-        return Ok(None);
-    }
-
-    let path_str = path.unwrap();
+pub fn try_load_cube(path_str: String) -> Result<Array3<u8>> {
     let path = Path::new(&path_str);
-    let ext = path.extension().unwrap().to_ascii_lowercase();
 
     if !path.exists() {
         // This should probably be a specific IO error?
         Err(anyhow!("File not found at {}!", path_str))
-    } else if ext != "npy" && ext != "npz" {
-        Err(anyhow!(
-            "Expexted numpy array with extension `npy` or `npz`, got {:?}.",
-            ext
-        ))
+    } else if path.is_dir() {
+        println!("Checking files in {:?}", path_str);
+        let paths = sorted_glob(path, "**/*.bin")?;
+        let mut buffer = Vec::new();
+
+        for p in paths {
+            let mut f = File::open(p)?;
+            f.read_to_end(&mut buffer)?;
+        }
+
+        let t = buffer.len() / (256 * 64);
+        let arr = Array::from_vec(buffer).into_shape((t, 256, 64))?;
+        Ok(arr.mapv(|v| v.reverse_bits()))
     } else {
-        let arr: Array3<u8> = read_npy(path_str)?;
-        Ok(Some(arr))
+        let ext = path.extension().unwrap().to_ascii_lowercase();
+
+        if ext != "npy" && ext != "npz" {
+            Err(anyhow!(
+                "Expexted numpy array with extension `npy` or `npz`, got {:?}.",
+                ext
+            ))
+        } else {
+            let arr: Array3<u8> = read_npy(path_str)?;
+            Ok(arr)
+        }
     }
 }
 

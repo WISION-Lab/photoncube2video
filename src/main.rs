@@ -14,11 +14,12 @@ use ndarray::parallel::prelude::*;
 use ndarray::Slice;
 use num_traits::AsPrimitive;
 
-use crate::cli::*;
 mod cli;
-
-use crate::io::*;
 mod io;
+mod utils;
+
+use crate::cli::*;
+use crate::io::*;
 
 #[allow(dead_code)]
 fn print_type_of<T>(_: &T) {
@@ -148,7 +149,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load all the neccesary files
-    let cube: Array3<u8> = try_load_cube(Some(args.input))?.unwrap();
+    let cube: Array3<u8> = try_load_cube(args.input)?;
     let inpaint_mask: Option<Array2<bool>> = try_load_mask(args.inpaint_path)?;
     let cfa_mask: Option<Array2<bool>> = try_load_mask(args.cfa_path)?;
     ensure_ffmpeg(true);
