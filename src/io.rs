@@ -6,14 +6,20 @@ pub use std::path::Path;
 use image::io::Reader as ImageReader;
 use ndarray_npy::read_npy;
 use nshare::ToNdarray2;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
 
-use ffmpeg_sidecar::command::{ffmpeg_is_installed, FfmpegCommand};
 use ffmpeg_sidecar::paths::sidecar_dir;
+use ffmpeg_sidecar::{
+    command::{ffmpeg_is_installed, FfmpegCommand},
+    event::{FfmpegEvent, FfmpegProgress},
+};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::utils::sorted_glob;
+
+const DEBUG_FFMPEG: bool = false;
 
 pub fn ensure_ffmpeg(verbose: bool) {
     if !ffmpeg_is_installed() {
@@ -33,6 +39,7 @@ pub fn make_video(
     fps: u64,
     num_frames: u64,
     pbar_style: Option<ProgressStyle>,
+    metadata: Option<HashMap<&str, &str>>,
 ) {
     let pbar = if let Some(style) = pbar_style {
         ProgressBar::new(num_frames).with_style(style)
@@ -40,16 +47,37 @@ pub fn make_video(
         ProgressBar::hidden()
     };
 
+    let metadata_args = metadata
+        .map(|map| {
+            let mut s: Vec<String> = Vec::new();
+            for (key, val) in map.iter() {
+                s.push("-metadata".to_string());
+                s.push(format!("{key}={val}"));
+            }
+            s
+        })
+        .unwrap_or(vec!["".to_string()]);
+
     let cmd = format!(
-        "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf 22 -pix_fmt yuv420p {outfile}"
+        "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf 22 -pix_fmt yuv420p"
     );
 
-    let mut ffmpeg_runner = FfmpegCommand::new().args(cmd.split(' ')).spawn().unwrap();
-    ffmpeg_runner
-        .iter()
-        .unwrap()
-        .filter_progress()
-        .for_each(|progress| pbar.set_position(progress.frame as u64));
+    let mut ffmpeg_runner = FfmpegCommand::new()
+        .args(cmd.split(' '))
+        .args(metadata_args)
+        .output(outfile)
+        .spawn()
+        .unwrap();
+
+    ffmpeg_runner.iter().unwrap().for_each(|e| match e {
+        FfmpegEvent::Progress(FfmpegProgress { frame, .. }) => pbar.set_position(frame as u64),
+        FfmpegEvent::Log(_level, msg) => {
+            if DEBUG_FFMPEG {
+                println!("[ffmpeg] {msg}")
+            }
+        }
+        _ => {}
+    });
     pbar.finish_and_clear();
 }
 

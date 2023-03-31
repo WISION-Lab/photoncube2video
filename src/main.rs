@@ -1,5 +1,6 @@
 use rand::Rng;
 use rusttype::{Font, Scale};
+use std::collections::HashMap;
 use std::convert::{From, Into};
 use std::fs::create_dir_all;
 use std::process;
@@ -237,13 +238,14 @@ fn main() -> Result<()> {
         .count();
 
     // Finally, make a call to ffmpeg to assemble to video
+    let cmd = format!("Created using: '{}'", std::env::args().collect::<Vec<_>>().join(" "));
     make_video(
         Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
         &args.output,
         args.fps,
         num_frames as u64,
         Some(pbar_style),
+        Some(HashMap::from([("comment", cmd.as_str())]))
     );
-
     Ok(())
 }
