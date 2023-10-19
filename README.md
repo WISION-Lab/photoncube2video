@@ -4,11 +4,12 @@ Command line utility to preview a photon cube as a video.
 Features:
 - Zero runtime dependencies, except for FFmpeg, which will be automatically downloaded if not found on path.
 - Multi-threaded and (despite very unoptimized code) blazing fast, at least as much as numpy+numba equivalent. 
-- Can read both bin files and npy files (assumes bitpacking in the width axis).
+- Can read bin files, npy files and npy.gz files (assumes bitpacking in the width axis).
 - Demosaicing, inpainting, and transforms (rotate/flip) are also supported.
 
 Limitations:
-- No support for mem-mapped NPY files yet ([PR here](https://github.com/jturner314/ndarray-npy/pull/45)), so if a npy file is larger than RAM, it will not work.
+- Untested support for mem-mapped NPY/Z files yet ([PR here](https://github.com/jturner314/ndarray-npy/pull/45)), so if a npy file is larger than RAM, it will not work.
+- If the photoncube is compressed with GZ, it will need to be read into memory and decompressed before any processing happens.
 
 
 ### Getting Started 
@@ -51,4 +52,10 @@ Options:
   -e, --end <END>                    Index of binary frame at which to end the preview at (exclusive)
   -h, --help                         Print help
   -V, --version                      Print version
+```
+
+Examples:
+```
+# This will apply rotation by 270 degrees then flip frames left-right, correct for color arrays and inpaint.
+photoncube2video -i binary.npy -a -t=rot270 -t=flip-lr --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy --colorspad-fix -o video.mp4
 ```

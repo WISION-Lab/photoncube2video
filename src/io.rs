@@ -1,6 +1,7 @@
 pub use anyhow::{anyhow, Result};
 
 pub use ndarray::prelude::*;
+use ndarray_npy::ReadNpyExt;
 pub use std::path::Path;
 
 use image::io::Reader as ImageReader;
@@ -8,7 +9,7 @@ use ndarray_npy::read_npy;
 use nshare::ToNdarray2;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::prelude::*;
+use std::io::{prelude::*, BufReader};
 
 use ffmpeg_sidecar::paths::sidecar_dir;
 use ffmpeg_sidecar::{
@@ -16,6 +17,7 @@ use ffmpeg_sidecar::{
     event::{FfmpegEvent, FfmpegProgress},
 };
 use indicatif::{ProgressBar, ProgressStyle};
+use flate2::read::GzDecoder;
 
 use crate::utils::sorted_glob;
 
@@ -111,12 +113,23 @@ pub fn try_load_cube(path_str: String, shape: Option<(usize, usize)>) -> Result<
     } else {
         let ext = path.extension().unwrap().to_ascii_lowercase();
 
-        if ext != "npy" && ext != "npz" {
+        if ext != "npy" && ext != "npz" && ext != "gz" {
             // This should probably be a specific IO error?
-            Err(anyhow!(
-                "Expexted numpy array with extension `npy` or `npz`, got {:?}.",
+            return Err(anyhow!(
+                "Expexted numpy array with extension `npy`, `npz` or `npy.gz`, got {:?}.",
                 ext
             ))
+        }
+
+        if ext == "gz" {
+            let file = File::open(path_str).unwrap();
+            let file = BufReader::new(file);
+            let mut file = GzDecoder::new(file);
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+
+            let arr = Array3::<u8>::read_npy(&bytes[..])?;
+            Ok(arr)
         } else {
             let arr: Array3<u8> = read_npy(path_str)?;
             Ok(arr)
