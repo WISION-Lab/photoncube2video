@@ -1,15 +1,13 @@
 pub use anyhow::{anyhow, Result};
 
 pub use ndarray::prelude::*;
-use ndarray_npy::ReadNpyExt;
 pub use std::path::Path;
 
 use image::io::Reader as ImageReader;
+
 use ndarray_npy::read_npy;
 use nshare::ToNdarray2;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{prelude::*, BufReader};
 
 use ffmpeg_sidecar::paths::sidecar_dir;
 use ffmpeg_sidecar::{
@@ -17,9 +15,6 @@ use ffmpeg_sidecar::{
     event::{FfmpegEvent, FfmpegProgress},
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use flate2::read::GzDecoder;
-
-use crate::utils::sorted_glob;
 
 const DEBUG_FFMPEG: bool = false;
 
@@ -81,60 +76,6 @@ pub fn make_video(
         _ => {}
     });
     pbar.finish_and_clear();
-}
-
-/// Given an Option of a path, try to load the image or npy file at that path
-/// and return it as a Result of an Option of array. Bubble up any io errors.  
-/// Currently only supports RGB8-type images.
-pub fn try_load_cube(path_str: String, shape: Option<(usize, usize)>) -> Result<Array3<u8>> {
-    let path = Path::new(&path_str);
-
-    if !path.exists() {
-        // This should probably be a specific IO error?
-        Err(anyhow!("File not found at {}!", path_str))
-    } else if path.is_dir() {
-        let (h, w) = shape.expect("Must specify shape if reading from .bin files");
-        let paths = sorted_glob(path, "**/*.bin")?;
-
-        if paths.is_empty() {
-            return Err(anyhow!("No .bin files found in {}!", path_str));
-        }
-
-        let mut buffer = Vec::new();
-
-        for p in paths {
-            let mut f = File::open(p)?;
-            f.read_to_end(&mut buffer)?;
-        }
-
-        let t = buffer.len() / (h * w / 8);
-        let arr = Array::from_vec(buffer).into_shape((t, h, w / 8))?;
-        Ok(arr.mapv(|v| v.reverse_bits()))
-    } else {
-        let ext = path.extension().unwrap().to_ascii_lowercase();
-
-        if ext != "npy" && ext != "npz" && ext != "gz" {
-            // This should probably be a specific IO error?
-            return Err(anyhow!(
-                "Expexted numpy array with extension `npy`, `npz` or `npy.gz`, got {:?}.",
-                ext
-            ))
-        }
-
-        if ext == "gz" {
-            let file = File::open(path_str).unwrap();
-            let file = BufReader::new(file);
-            let mut file = GzDecoder::new(file);
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).unwrap();
-
-            let arr = Array3::<u8>::read_npy(&bytes[..])?;
-            Ok(arr)
-        } else {
-            let arr: Array3<u8> = read_npy(path_str)?;
-            Ok(arr)
-        }
-    }
 }
 
 /// Load either a 2D NPY file or an intensity-only image file as an array of booleans.

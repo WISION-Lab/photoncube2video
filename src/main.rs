@@ -1,9 +1,15 @@
+pub use anyhow::{anyhow, Result};
+use flate2::read::GzDecoder;
+use memmap2::Mmap;
+use ndarray_npy::{ReadNpyExt, ViewNpyExt};
 use rand::Rng;
 use rusttype::{Font, Scale};
 use std::collections::HashMap;
 use std::convert::{From, Into};
-use std::fs::create_dir_all;
+use std::fs::{create_dir_all, File};
+use std::io::{BufReader, Read};
 use std::process;
+use utils::sorted_glob;
 
 use image::{imageops, GrayImage, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
@@ -29,7 +35,9 @@ fn print_type_of<T>(_: &T) {
 
 fn unpack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Array2<u8> {
     // This pattern is cluncky, is there an easier one that's as readable as unpacking?
-    let [h_orig, w_orig, ..] = bitplane.shape() else {process::exit(exitcode::DATAERR)};
+    let [h_orig, w_orig, ..] = bitplane.shape() else {
+        process::exit(exitcode::DATAERR)
+    };
     let h = if axis == 0 { h_orig * 8 } else { *h_orig };
     let w = if axis == 1 { w_orig * 8 } else { *w_orig };
 
@@ -150,7 +158,61 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Load all the neccesary files
-    let mut cube: Array3<u8> = try_load_cube(args.input, Some((256, 512)))?;
+    let path = Path::new(&args.input);
+    let _arr: Array3<u8>;
+    let _mmap: Mmap;
+
+    let mut cube: ArrayView3<u8> = if !path.exists() {
+        // This should probably be a specific IO error?
+        return Err(anyhow!("File not found at {}!", args.input));
+    } else if path.is_dir() {
+        let (h, w) = (256, 512);
+        let paths = sorted_glob(path, "**/*.bin")?;
+
+        if paths.is_empty() {
+            return Err(anyhow!("No .bin files found in {}!", args.input));
+        }
+
+        let mut buffer = Vec::new();
+
+        for p in paths {
+            let mut f = File::open(p)?;
+            f.read_to_end(&mut buffer)?;
+        }
+
+        let t = buffer.len() / (h * w / 8);
+        _arr = Array::from_vec(buffer)
+            .into_shape((t, h, w / 8))?
+            .mapv(|v| v.reverse_bits());
+        _arr.view()
+    } else {
+        let ext = path.extension().unwrap().to_ascii_lowercase();
+
+        if ext != "npy" && ext != "npz" && ext != "gz" {
+            // This should probably be a specific IO error?
+            return Err(anyhow!(
+                "Expexted numpy array with extension `npy`, `npz` or `npy.gz`, got {:?}.",
+                ext
+            ));
+        }
+
+        if ext == "gz" {
+            let file = File::open(args.input).unwrap();
+            let file = BufReader::new(file);
+            let mut file = GzDecoder::new(file);
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).unwrap();
+
+            _arr = Array3::<u8>::read_npy(&bytes[..])?;
+            _arr.view()
+        } else {
+            let file = File::open(args.input)?;
+            _mmap = unsafe { Mmap::map(&file)? };
+
+            ArrayView3::<u8>::view_npy(&_mmap)?
+        }
+    };
+
     let inpaint_mask: Option<Array2<bool>> = try_load_mask(args.inpaint_path)?;
     let cfa_mask: Option<Array2<bool>> = try_load_mask(args.cfa_path)?;
     ensure_ffmpeg(true);
@@ -238,14 +300,17 @@ fn main() -> Result<()> {
         .count();
 
     // Finally, make a call to ffmpeg to assemble to video
-    let cmd = format!("Created using: '{}'", std::env::args().collect::<Vec<_>>().join(" "));
+    let cmd = format!(
+        "Created using: '{}'",
+        std::env::args().collect::<Vec<_>>().join(" ")
+    );
     make_video(
         Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
         &args.output,
         args.fps,
         num_frames as u64,
         Some(pbar_style),
-        Some(HashMap::from([("comment", cmd.as_str())]))
+        Some(HashMap::from([("comment", cmd.as_str())])),
     );
     Ok(())
 }
