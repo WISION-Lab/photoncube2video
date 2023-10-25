@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::convert::{From, Into};
 use std::fs::{create_dir_all, File};
 use std::io::{BufReader, Read};
+use std::ops::BitOr;
 use std::process;
 use utils::sorted_glob;
 
@@ -97,6 +98,21 @@ fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
         };
     }
     frame
+}
+
+#[allow(dead_code)]
+fn linearrgb_to_srgb(frame: Array2<f32>) -> Array2<f32> {
+    // https://github.com/blender/blender/blob/master/source/blender/blenlib/intern/math_color.c
+    frame.mapv(|x| {
+        if x < 0.0031308 {
+            if x < 0.0 {
+                return 0.0;
+            } else {
+                return x * 12.92;
+            }
+        }
+        return 1.055 * x.powf(1.0 / 2.4) - 0.055;
+    })
 }
 
 fn process_colorspad(mut frame: Array2<u8>) -> Array2<u8> {
@@ -213,7 +229,17 @@ fn main() -> Result<()> {
         }
     };
 
-    let inpaint_mask: Option<Array2<bool>> = try_load_mask(args.inpaint_path)?;
+    let inpaint_mask: Option<Array2<bool>> = if !args.inpaint_path.is_empty() {
+        // Vec<Result<Option<Array2<bool>>>> -> Result<Vec<Option<Array2<bool>>>> -> Vec<Option<Array2<bool>>>
+        let mask_vec = args.inpaint_path.iter()
+            .map(|path| try_load_mask(Some(path.to_string()))).collect::<Result<Vec<_>>>()?;
+        let mask_vec: Option<Vec<_>> = mask_vec.into_iter().collect();
+        mask_vec.unwrap().into_iter().reduce(|acc, e| acc.bitor(e))
+    } else {
+        None
+    };
+
+    // let inpaint_mask: Option<Array2<bool>> = try_load_mask(args.inpaint_path)?;
     let cfa_mask: Option<Array2<bool>> = try_load_mask(args.cfa_path)?;
     ensure_ffmpeg(true);
 

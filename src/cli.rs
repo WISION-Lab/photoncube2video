@@ -21,8 +21,8 @@ pub struct Args {
     pub cfa_path: Option<String>,
 
     /// Path of inpainting mask to use for filtering out dead/hot pixels
-    #[arg(long, default_value = None)]
-    pub inpaint_path: Option<String>,
+    #[arg(long, num_args(0..))]
+    pub inpaint_path: Vec<String>,
 
     /// Number of frames to average together
     #[arg(short, long, default_value_t = 256)]
