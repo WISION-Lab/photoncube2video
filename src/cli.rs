@@ -51,6 +51,14 @@ pub struct Args {
     /// Index of binary frame at which to end the preview at (exclusive)
     #[arg(short, long, default_value = None)]
     pub end: Option<isize>,
+
+    /// If enabled, invert the SPAD's response (bernouilli process)
+    #[arg(long, action)]
+    pub invert_response: bool,
+
+    /// If enabled, apply sRGB tonemapping to output
+    #[arg(long, action)]
+    pub tonemap2srgb: bool,
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]

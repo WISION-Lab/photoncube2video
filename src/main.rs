@@ -1,172 +1,32 @@
-pub use anyhow::{anyhow, Result};
-use flate2::read::GzDecoder;
-use memmap2::Mmap;
-use ndarray_npy::{ReadNpyExt, ViewNpyExt};
-use rand::Rng;
-use rusttype::{Font, Scale};
 use std::collections::HashMap;
-use std::convert::{From, Into};
+use std::convert::From;
 use std::fs::{create_dir_all, File};
 use std::io::{BufReader, Read};
 use std::ops::BitOr;
-use std::process;
-use utils::sorted_glob;
 
-use image::{imageops, GrayImage, Rgb, RgbImage};
-use imageproc::drawing::{draw_text_mut, text_size};
-use imageproc::map::map_pixels;
+use anyhow::{anyhow, Result};
+use flate2::read::GzDecoder;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
+use memmap2::Mmap;
 use tempfile::tempdir;
 
 use ndarray::parallel::prelude::*;
 use ndarray::Slice;
-use num_traits::AsPrimitive;
+use ndarray_npy::{ReadNpyExt, ViewNpyExt};
 
 mod cli;
 mod io;
+mod transforms;
 mod utils;
 
 use crate::cli::*;
 use crate::io::*;
+use crate::transforms::*;
+use crate::utils::sorted_glob;
 
 #[allow(dead_code)]
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
-}
-
-fn unpack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Array2<u8> {
-    // This pattern is cluncky, is there an easier one that's as readable as unpacking?
-    let [h_orig, w_orig, ..] = bitplane.shape() else {
-        process::exit(exitcode::DATAERR)
-    };
-    let h = if axis == 0 { h_orig * 8 } else { *h_orig };
-    let w = if axis == 1 { w_orig * 8 } else { *w_orig };
-
-    // Allocate full sized frame
-    let mut unpacked_bitplane = Array2::<u8>::zeros((h, w));
-
-    // Iterate through slices with stride 8 of the full array and fill it up
-    // Note: We reverse the shift to account for endianness
-    for shift in 0..8 {
-        let ishift = 7 - shift;
-        let mut slice =
-            unpacked_bitplane.slice_axis_mut(Axis(axis), Slice::from(shift..).step_by(8));
-        slice.assign(&((bitplane & (1 << ishift)) >> ishift));
-    }
-
-    unpacked_bitplane
-}
-
-fn array2grayimage(frame: Array2<u8>) -> GrayImage {
-    GrayImage::from_raw(
-        frame.len_of(Axis(1)) as u32,
-        frame.len_of(Axis(0)) as u32,
-        frame.into_raw_vec(),
-    )
-    .unwrap()
-}
-
-fn array2rgbimage(frame: Array2<u8>) -> RgbImage {
-    // Create grayscale image
-    let img = array2grayimage(frame);
-
-    // Convert it to rgb by duplicating each pixel
-    map_pixels(&img, |_x, _y, p| Rgb([p[0], p[0], p[0]]))
-}
-
-fn annotate(frame: &mut RgbImage, text: &str) {
-    let font = Vec::from(include_bytes!("DejaVuSans.ttf") as &[u8]);
-    let font = Font::try_from_vec(font).unwrap();
-    let scale = Scale { x: 20.0, y: 20.0 };
-
-    draw_text_mut(frame, Rgb([252, 186, 3]), 5, 5, scale, &font, text);
-    text_size(scale, &font, text);
-}
-
-fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
-    // Note: if we don't shadow `frame` as a mut, we cannot override it in the loop
-    let mut frame = frame;
-
-    for t in transform.iter() {
-        frame = match t {
-            Transform::Identity => continue,
-            Transform::Rot90 => imageops::rotate90(&frame),
-            Transform::Rot180 => imageops::rotate180(&frame),
-            Transform::Rot270 => imageops::rotate270(&frame),
-            Transform::FlipUD => imageops::flip_vertical(&frame),
-            Transform::FlipLR => imageops::flip_horizontal(&frame),
-        };
-    }
-    frame
-}
-
-#[allow(dead_code)]
-fn linearrgb_to_srgb(frame: Array2<f32>) -> Array2<f32> {
-    // https://github.com/blender/blender/blob/master/source/blender/blenlib/intern/math_color.c
-    frame.mapv(|x| {
-        if x < 0.0031308 {
-            if x < 0.0 {
-                return 0.0;
-            } else {
-                return x * 12.92;
-            }
-        }
-        return 1.055 * x.powf(1.0 / 2.4) - 0.055;
-    })
-}
-
-fn process_colorspad(mut frame: Array2<u8>) -> Array2<u8> {
-    // Crop dead regions around edges
-    let mut crop = frame.slice_mut(s![2.., ..496]);
-
-    // Swap rows (Can we do this inplace?)
-    let (mut slice_a, mut slice_b) = crop.multi_slice_mut((s![.., 252..256], s![.., 260..264]));
-    let tmp_slice = slice_a.to_owned();
-    slice_a.assign(&slice_b);
-    slice_b.assign(&tmp_slice);
-
-    // This clones the array, can we avoid this somehow??
-    crop.to_owned()
-}
-
-// Note: The use of generics here is heavy handed, we only really want this function
-//       to work with T=u8 or maybe T=f32/i32. Is there a better way? I.e generic over primitives?
-fn interpolate_where_mask<T>(frame: Array2<T>, mask: &Array2<bool>, dither: bool) -> Array2<T>
-where
-    T: Into<f32> + Copy + 'static,
-    f32: AsPrimitive<T>,
-    bool: AsPrimitive<T>,
-{
-    let mut rng = rand::thread_rng();
-    let (h, w) = frame.dim();
-
-    Array2::from_shape_fn((h, w), |(i, j)| {
-        if mask[(i, j)] {
-            let mut counter = 0.0;
-            let mut value = 0.0;
-
-            for ki in [(i as isize) - 1, (i as isize) + 1] {
-                if (ki >= 0) && (ki < h as isize) {
-                    counter += 1.0;
-                    value += T::into(frame[(ki as usize, j)]);
-                }
-            }
-            for kj in [(j as isize) - 1, (j as isize) + 1] {
-                if (kj >= 0) && (kj < w as isize) {
-                    counter += 1.0;
-                    value += T::into(frame[(i, kj as usize)]);
-                }
-            }
-
-            if dither {
-                (rng.gen_range(0.0..1.0) < (value / counter)).as_()
-            } else {
-                ((value / counter).round()).as_()
-            }
-        } else {
-            frame[(i, j)]
-        }
-    })
 }
 
 fn main() -> Result<()> {
@@ -175,8 +35,8 @@ fn main() -> Result<()> {
 
     // Load all the neccesary files
     let path = Path::new(&args.input);
-    let _arr: Array3<u8>;
-    let _mmap: Mmap;
+    let _arr: Array3<u8>; // These are needed to keep the underlying object's data in scope
+    let _mmap: Mmap; // otherwise we get a use-after-free error.
 
     let mut cube: ArrayView3<u8> = if !path.exists() {
         // This should probably be a specific IO error?
@@ -231,8 +91,11 @@ fn main() -> Result<()> {
 
     let inpaint_mask: Option<Array2<bool>> = if !args.inpaint_path.is_empty() {
         // Vec<Result<Option<Array2<bool>>>> -> Result<Vec<Option<Array2<bool>>>> -> Vec<Option<Array2<bool>>>
-        let mask_vec = args.inpaint_path.iter()
-            .map(|path| try_load_mask(Some(path.to_string()))).collect::<Result<Vec<_>>>()?;
+        let mask_vec = args
+            .inpaint_path
+            .iter()
+            .map(|path| try_load_mask(Some(path.to_string())))
+            .collect::<Result<Vec<_>>>()?;
         let mask_vec: Option<Vec<_>> = mask_vec.into_iter().collect();
         mask_vec.unwrap().into_iter().reduce(|acc, e| acc.bitor(e))
     } else {
@@ -278,9 +141,21 @@ fn main() -> Result<()> {
                 .reduce(|acc, e| acc + e)
                 .unwrap();
 
-            // Normalize by burst_size, then convert to u8
-            let frame = frame / (args.burst_size as f32) * 255.0;
-            let mut frame = frame.mapv(|x| x as u8);
+            // Normalize by burst_size, giving us an f32 image in [0, 1]
+            let mut frame = frame / (args.burst_size as f32);
+
+            // Invert SPAD response
+            if args.invert_response {
+                frame = binary_avg_to_rgb(frame, 1.0, None);
+            }
+
+            // Apply sRGB tonemapping
+            if args.tonemap2srgb {
+                frame = linearrgb_to_srgb(frame);
+            }
+
+            // Convert to uint8 in [0, 255] range
+            let mut frame = frame.mapv(|x| (x * 255.0) as u8);
 
             // Apply any frame-level fixes (only for ColorSPAD at the moment)
             if args.colorspad_fix {
