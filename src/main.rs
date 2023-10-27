@@ -4,13 +4,13 @@ use std::fs::{create_dir_all, File};
 use std::io::{BufReader, Read};
 use std::ops::BitOr;
 
+use rayon::prelude::*;
 use anyhow::{anyhow, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use memmap2::Mmap;
 use tempfile::tempdir;
 
-use ndarray::parallel::prelude::*;
 use ndarray::Slice;
 use ndarray_npy::{ReadNpyExt, ViewNpyExt};
 
@@ -122,14 +122,15 @@ fn main() -> Result<()> {
     .unwrap();
 
     // Create parallel iterator over all chunks of frames and process them
-    let frames = groups
+    let num_frames = groups
         // Make it parallel
         .into_par_iter()
         // Add progress bar
         .progress_count(cube.len_of(Axis(0)) as u64 / args.burst_size as u64)
         .with_style(pbar_style.clone())
         .enumerate()
-        .map(|(i, group)| {
+        // Process data, save and count frames, this consumes/runs the iterator to completion
+        .try_fold(|| 0, |count, (i, group)| {
             let frame = group
                 // Unpack every frame in group
                 .axis_iter(Axis(0))
@@ -164,12 +165,12 @@ fn main() -> Result<()> {
 
             // Demosaic frame by interpolating white pixels
             if let Some(mask) = &cfa_mask {
-                frame = interpolate_where_mask(frame, mask, false)
+                frame = interpolate_where_mask(frame, mask, false)?;
             }
 
             // Inpaint any hot/dead pixels
             if let Some(mask) = &inpaint_mask {
-                frame = interpolate_where_mask(frame, mask, false)
+                frame = interpolate_where_mask(frame, mask, false)?;
             }
 
             // Convert to image and rotate/flip as needed
@@ -185,20 +186,14 @@ fn main() -> Result<()> {
                 annotate(&mut frame, &text);
             }
 
-            // Return both the frame and it's index so we can later save
-            (i, frame)
-        });
-
-    // Save and count frames, this consumes/runs the above iterator
-    let num_frames = frames
-        .map(|(i, frame)| {
             // Throw error if we cannot save.
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             frame
                 .save(&path)
                 .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
-        })
-        .count();
+
+            Ok::<u32, anyhow::Error>(count+1)
+        }).try_reduce(|| 0, |acc, x| Ok(acc + x))?;
 
     // Finally, make a call to ffmpeg to assemble to video
     let cmd = format!(
