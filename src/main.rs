@@ -107,9 +107,10 @@ fn main() -> Result<()> {
     ensure_ffmpeg(true);
 
     // Get img path or tempdir, ensure it exists.
+    let tmp_dir = tempdir()?;
     let img_dir = args
         .img_dir
-        .unwrap_or(tempdir()?.path().to_str().unwrap().to_owned());
+        .unwrap_or(tmp_dir.path().to_str().unwrap().to_owned());
     create_dir_all(&img_dir).ok();
 
     // // Create chunked iterator over all data
@@ -189,8 +190,8 @@ fn main() -> Result<()> {
             // Throw error if we cannot save.
             let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
             frame
-                .save(&path)
-                .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+                .save(&path)?;
+                // .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
 
             Ok::<u32, anyhow::Error>(count+1)
         }).try_reduce(|| 0, |acc, x| Ok(acc + x))?;
@@ -208,5 +209,6 @@ fn main() -> Result<()> {
         Some(pbar_style),
         Some(HashMap::from([("comment", cmd.as_str())])),
     );
+    tmp_dir.close()?;
     Ok(())
 }
