@@ -9,11 +9,11 @@ pub struct Args {
     pub input: String,
 
     /// Path of output video
-    #[arg(short, long, default_value = "out.mp4")]
-    pub output: String,
+    #[arg(short, long)]
+    pub output: Option<String>,
 
     /// Output directory to save PNGs in
-    #[arg(long)]
+    #[arg(short = 'd', long)]
     pub img_dir: Option<String>,
 
     /// Path of color filter array to use for demosaicing

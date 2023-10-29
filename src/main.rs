@@ -4,11 +4,11 @@ use std::fs::{create_dir_all, File};
 use std::io::{BufReader, Read};
 use std::ops::BitOr;
 
-use rayon::prelude::*;
 use anyhow::{anyhow, Result};
 use flate2::read::GzDecoder;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use memmap2::Mmap;
+use rayon::prelude::*;
 use tempfile::tempdir;
 
 use ndarray::Slice;
@@ -32,6 +32,13 @@ fn print_type_of<T>(_: &T) {
 fn main() -> Result<()> {
     // Parse arguments defined in struct
     let args = Args::parse();
+
+    // Ensure the user set at least one output
+    if args.output.is_some() && args.img_dir.is_none() {
+        return Err(anyhow!(
+            "At least one output needs to be specified. Please either set --output or --img-dir (or both)."
+        ));
+    }
 
     // Load all the neccesary files
     let path = Path::new(&args.input);
@@ -64,10 +71,10 @@ fn main() -> Result<()> {
     } else {
         let ext = path.extension().unwrap().to_ascii_lowercase();
 
-        if ext != "npy" && ext != "npz" && ext != "gz" {
+        if ext != "npy" && ext != "gz" {
             // This should probably be a specific IO error?
             return Err(anyhow!(
-                "Expexted numpy array with extension `npy`, `npz` or `npy.gz`, got {:?}.",
+                "Expexted numpy array with extension `npy`, or `npy.gz`, got {:?}.",
                 ext
             ));
         }
@@ -131,84 +138,89 @@ fn main() -> Result<()> {
         .with_style(pbar_style.clone())
         .enumerate()
         // Process data, save and count frames, this consumes/runs the iterator to completion
-        .try_fold(|| 0, |count, (i, group)| {
-            let frame = group
-                // Unpack every frame in group
-                .axis_iter(Axis(0))
-                .map(|bitplane| unpack_single(&bitplane, 1))
-                // Convert all frames to f32 to avoid overflows when summing
-                .map(|bitplane| bitplane.mapv(|x| x as f32))
-                // Sum frames together, use reduce not `.sum` as it's not
-                // implemented for this type, maybe use `accumulate_axis_inplace`
-                .reduce(|acc, e| acc + e)
-                .unwrap();
+        .try_fold(
+            || 0,
+            |count, (i, group)| {
+                let frame = group
+                    // Unpack every frame in group
+                    .axis_iter(Axis(0))
+                    .map(|bitplane| unpack_single(&bitplane, 1))
+                    // Convert all frames to f32 to avoid overflows when summing
+                    .map(|bitplane| bitplane.mapv(|x| x as f32))
+                    // Sum frames together, use reduce not `.sum` as it's not
+                    // implemented for this type, maybe use `accumulate_axis_inplace`
+                    .reduce(|acc, e| acc + e)
+                    .unwrap();
 
-            // Normalize by burst_size, giving us an f32 image in [0, 1]
-            let mut frame = frame / (args.burst_size as f32);
+                // Normalize by burst_size, giving us an f32 image in [0, 1]
+                let mut frame = frame / (args.burst_size as f32);
 
-            // Invert SPAD response
-            if args.invert_response {
-                frame = binary_avg_to_rgb(frame, 1.0, None);
-            }
+                // Invert SPAD response
+                if args.invert_response {
+                    frame = binary_avg_to_rgb(frame, 1.0, None);
+                }
 
-            // Apply sRGB tonemapping
-            if args.tonemap2srgb {
-                frame = linearrgb_to_srgb(frame);
-            }
+                // Apply sRGB tonemapping
+                if args.tonemap2srgb {
+                    frame = linearrgb_to_srgb(frame);
+                }
 
-            // Convert to uint8 in [0, 255] range
-            let mut frame = frame.mapv(|x| (x * 255.0) as u8);
+                // Convert to uint8 in [0, 255] range
+                let mut frame = frame.mapv(|x| (x * 255.0) as u8);
 
-            // Apply any frame-level fixes (only for ColorSPAD at the moment)
-            if args.colorspad_fix {
-                frame = process_colorspad(frame);
-            }
+                // Apply any frame-level fixes (only for ColorSPAD at the moment)
+                if args.colorspad_fix {
+                    frame = process_colorspad(frame);
+                }
 
-            // Demosaic frame by interpolating white pixels
-            if let Some(mask) = &cfa_mask {
-                frame = interpolate_where_mask(frame, mask, false)?;
-            }
+                // Demosaic frame by interpolating white pixels
+                if let Some(mask) = &cfa_mask {
+                    frame = interpolate_where_mask(frame, mask, false)?;
+                }
 
-            // Inpaint any hot/dead pixels
-            if let Some(mask) = &inpaint_mask {
-                frame = interpolate_where_mask(frame, mask, false)?;
-            }
+                // Inpaint any hot/dead pixels
+                if let Some(mask) = &inpaint_mask {
+                    frame = interpolate_where_mask(frame, mask, false)?;
+                }
 
-            // Convert to image and rotate/flip as needed
-            let frame = array2rgbimage(frame.to_owned());
-            let mut frame = apply_transform(frame, &args.transform);
+                // Convert to image and rotate/flip as needed
+                let frame = array2rgbimage(frame.to_owned());
+                let mut frame = apply_transform(frame, &args.transform);
 
-            if args.annotate {
-                let text = format!(
-                    "{:06}:{:06}",
-                    i * args.burst_size + (start_offset as usize),
-                    (i + 1) * args.burst_size + (start_offset as usize)
-                );
-                annotate(&mut frame, &text);
-            }
+                if args.annotate {
+                    let text = format!(
+                        "{:06}:{:06}",
+                        i * args.burst_size + (start_offset as usize),
+                        (i + 1) * args.burst_size + (start_offset as usize)
+                    );
+                    annotate(&mut frame, &text);
+                }
 
-            // Throw error if we cannot save.
-            let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
-            frame
-                .save(&path)?;
-                // .unwrap_or_else(|_| panic!("Could not save frame at {}!", &path.display()));
+                // Throw error if we cannot save, and stop all processing.
+                let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+                frame.save(&path)?;
 
-            Ok::<u32, anyhow::Error>(count+1)
-        }).try_reduce(|| 0, |acc, x| Ok(acc + x))?;
+                Ok::<u32, anyhow::Error>(count + 1)
+            },
+        )
+        .try_reduce(|| 0, |acc, x| Ok(acc + x))?;
 
     // Finally, make a call to ffmpeg to assemble to video
     let cmd = format!(
         "Created using: '{}'",
         std::env::args().collect::<Vec<_>>().join(" ")
     );
-    make_video(
-        Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
-        &args.output,
-        args.fps,
-        num_frames as u64,
-        Some(pbar_style),
-        Some(HashMap::from([("comment", cmd.as_str())])),
-    );
+
+    if let Some(output) = args.output {
+        make_video(
+            Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
+            &output,
+            args.fps,
+            num_frames as u64,
+            Some(pbar_style),
+            Some(HashMap::from([("comment", cmd.as_str())])),
+        );
+    }
     tmp_dir.close()?;
     Ok(())
 }

@@ -140,16 +140,25 @@ pub fn process_colorspad(mut frame: Array2<u8>) -> Array2<u8> {
 
 // Note: The use of generics here is heavy handed, we only really want this function
 //       to work with T=u8 or maybe T=f32/i32. Is there a better way? I.e generic over primitives?
-pub fn interpolate_where_mask<T>(frame: Array2<T>, mask: &Array2<bool>, dither: bool) -> Result<Array2<T>>
+pub fn interpolate_where_mask<T>(
+    frame: Array2<T>,
+    mask: &Array2<bool>,
+    dither: bool,
+) -> Result<Array2<T>>
 where
     T: Into<f32> + Copy + 'static,
     f32: AsPrimitive<T>,
     bool: AsPrimitive<T>,
 {
     let (h, w) = frame.dim();
+    let (mask_h, mask_w) = mask.dim();
 
-    if (h, w) != mask.dim() {
-        return Err(anyhow!("Frame has size {:?} but interpolation mask has size {:?}", frame.dim(), mask.dim()));
+    if (mask_h < h) || (mask_w < w) {
+        return Err(anyhow!(
+            "Frame has size {:?} but interpolation mask has size {:?}",
+            frame.dim(),
+            mask.dim()
+        ));
     }
 
     let mut rng = rand::thread_rng();
