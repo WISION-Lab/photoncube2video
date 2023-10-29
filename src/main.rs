@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     // Ensure the user set at least one output
-    if args.output.is_some() && args.img_dir.is_none() {
+    if args.output.is_none() && args.img_dir.is_none() {
         return Err(anyhow!(
             "At least one output needs to be specified. Please either set --output or --img-dir (or both)."
         ));
