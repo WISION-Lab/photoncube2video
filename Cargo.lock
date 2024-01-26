@@ -833,6 +833,7 @@ version = "0.2.7"
 dependencies = [
  "anyhow",
  "clap",
+ "conv",
  "exitcode",
  "ffmpeg-sidecar",
  "flate2",

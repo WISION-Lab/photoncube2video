@@ -1,31 +1,37 @@
 use std::convert::{From, Into};
-use std::process;
 
+use anyhow::{anyhow, Result};
+use imageproc::{
+    definitions::{Clamp, Image},
+    map::map_pixels,
+};
 use rand::Rng;
 use rusttype::{Font, Scale};
 
-use image::{imageops, GrayImage, Rgb, RgbImage};
+use conv::ValueFrom;
+use image::{imageops, GrayImage, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::drawing::{draw_text_mut, text_size};
-use imageproc::map::map_pixels;
 
-use ndarray::Slice;
+use ndarray::{s, Array, Array2, Array3, ArrayView2, ArrayView3, Axis, Slice};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
 use num_traits::AsPrimitive;
 
-use crate::cli::*;
-use crate::io::*;
+use crate::cli::Transform;
 
-pub fn unpack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Array2<u8> {
+pub fn unpack_single<T>(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Result<Array2<T>>
+where
+    T: From<u8> + Copy + num_traits::Zero + 'static,
+{
     // This pattern is cluncky, is there an easier one that's as readable as unpacking?
     let [h_orig, w_orig, ..] = bitplane.shape() else {
-        process::exit(exitcode::DATAERR)
+        return Err(anyhow!("Malformed bitplane encountered."));
     };
     let h = if axis == 0 { h_orig * 8 } else { *h_orig };
     let w = if axis == 1 { w_orig * 8 } else { *w_orig };
 
     // Allocate full sized frame
-    let mut unpacked_bitplane = Array2::<u8>::zeros((h, w));
+    let mut unpacked_bitplane = Array2::<T>::zeros((h, w));
 
     // Iterate through slices with stride 8 of the full array and fill it up
     // Note: We reverse the shift to account for endianness
@@ -33,14 +39,19 @@ pub fn unpack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Array2<u8> {
         let ishift = 7 - shift;
         let mut slice =
             unpacked_bitplane.slice_axis_mut(Axis(axis), Slice::from(shift..).step_by(8));
-        slice.assign(&((bitplane & (1 << ishift)) >> ishift));
+        let bit = (bitplane & (1 << ishift)) >> ishift;
+        slice.assign(&bit.mapv(|i| T::from(i)));
     }
 
-    unpacked_bitplane
+    Ok(unpacked_bitplane)
 }
 
-pub fn array2grayimage(frame: Array2<u8>) -> GrayImage {
-    GrayImage::from_raw(
+// Replaces `nshare::ToImageLuma` (which isn't actually implemented?!)
+pub fn array2_to_grayimage<T>(frame: Array2<T>) -> ImageBuffer<Luma<T>, Vec<T>>
+where
+    T: image::Primitive,
+{
+    ImageBuffer::<Luma<T>, Vec<T>>::from_raw(
         frame.len_of(Axis(1)) as u32,
         frame.len_of(Axis(0)) as u32,
         frame.into_raw_vec(),
@@ -48,24 +59,86 @@ pub fn array2grayimage(frame: Array2<u8>) -> GrayImage {
     .unwrap()
 }
 
-pub fn array2rgbimage(frame: Array2<u8>) -> RgbImage {
-    // Create grayscale image
-    let img = array2grayimage(frame);
-
-    // Convert it to rgb by duplicating each pixel
-    map_pixels(&img, |_x, _y, p| Rgb([p[0], p[0], p[0]]))
+// Replaces `nshare::ToNdarray2`
+pub fn grayimage_to_array2<T>(im: ImageBuffer<Luma<T>, Vec<T>>) -> Array2<T>
+where
+    T: image::Primitive,
+{
+    Array2::from_shape_vec((im.height() as usize, im.width() as usize), im.into_raw()).unwrap()
 }
 
-pub fn annotate(frame: &mut RgbImage, text: &str) {
+// Given an NDarray of HxWxC, convert it to an RGBImage (C must equal 3)
+// Note: Contrary to link below, we use HWC *not* CHW.
+//       This means we cannot use `nshare::ToNdarray3`
+//       as it converts an image to CHW format.
+// https://stackoverflow.com/questions/56762026/how-to-save-ndarray-in-rust-as-image
+pub fn array3_to_image<P>(arr: Array3<P::Subpixel>) -> ImageBuffer<P, Vec<P::Subpixel>>
+where
+    P: image::Pixel,
+{
+    assert!(arr.is_standard_layout());
+    let (height, width, _) = arr.dim();
+    let raw = arr.into_raw_vec();
+
+    ImageBuffer::<P, Vec<P::Subpixel>>::from_raw(width as u32, height as u32, raw)
+        .expect("container should have the right size for the image dimensions")
+}
+
+// Alternative to `nshare::ToNdarray3` which returns HWC array
+pub fn image_to_array3<P>(im: ImageBuffer<P, Vec<P::Subpixel>>) -> Array3<P::Subpixel>
+where
+    P: image::Pixel,
+{
+    Array3::from_shape_vec(
+        (
+            im.height() as usize,
+            im.width() as usize,
+            P::CHANNEL_COUNT as usize,
+        ),
+        im.into_raw(),
+    )
+    .unwrap()
+}
+
+// Alternative to `nshare::RefNdarray3` which returns HWC array
+pub fn ref_image_to_array3<P>(im: &ImageBuffer<P, Vec<P::Subpixel>>) -> ArrayView3<P::Subpixel>
+where
+    P: image::Pixel,
+{
+    ArrayView3::from_shape(
+        (
+            im.height() as usize,
+            im.width() as usize,
+            P::CHANNEL_COUNT as usize,
+        ),
+        im,
+    )
+    .unwrap()
+}
+
+pub fn gray_to_rgbimage(frame: &GrayImage) -> RgbImage {
+    // Convert it to rgb by duplicating each pixel
+    map_pixels(frame, |_x, _y, p| Rgb([p[0], p[0], p[0]]))
+}
+
+pub fn annotate<P>(frame: &mut Image<P>, text: &str, color: P)
+where
+    P: Pixel,
+    <P as Pixel>::Subpixel: Clamp<f32>,
+    f32: ValueFrom<<P as Pixel>::Subpixel>,
+{
     let font = Vec::from(include_bytes!("DejaVuSans.ttf") as &[u8]);
     let font = Font::try_from_vec(font).unwrap();
-    let scale = Scale { x: 25.0, y: 25.0 };
+    let scale = Scale { x: 20.0, y: 20.0 };
 
-    draw_text_mut(frame, Rgb([252, 186, 3]), 5, 5, scale, &font, text);
+    draw_text_mut(frame, color, 5, 5, scale, &font, text);
     text_size(scale, &font, text);
 }
 
-pub fn apply_transform(frame: RgbImage, transform: &[Transform]) -> RgbImage {
+pub fn apply_transform<P>(frame: Image<P>, transform: &[Transform]) -> Image<P>
+where
+    P: Pixel + 'static,
+{
     // Note: if we don't shadow `frame` as a mut, we cannot override it in the loop
     let mut frame = frame;
 

@@ -46,7 +46,7 @@ pub fn make_video(
 
     let cmd = format!(
         // Scale to a max width of 1280 pixels as long as the height is divisible by 2
-        "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf 22 -pix_fmt yuv420p -vf scale=1280:-2 {outfile}"
+        "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf 22 -pix_fmt yuv420p -vf scale=1280:-2"
     );
     let mut output = "".to_owned();
 

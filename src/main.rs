@@ -1,25 +1,30 @@
+#![allow(dead_code)] // Todo: Remove
+                     // #![allow(unused_imports)]
+
 use std::collections::HashMap;
 use std::convert::From;
 use std::fs::{create_dir_all, File};
 use std::io::{BufReader, Read};
 use std::ops::BitOr;
+use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use ffmpeg::{ensure_ffmpeg, make_video};
 use flate2::read::GzDecoder;
+use image::Rgb;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use tempfile::tempdir;
 
-use ndarray::Slice;
+use ndarray::{Array, Array2, Array3, ArrayView3, Axis, Slice};
 use ndarray_npy::{ReadNpyExt, ViewNpyExt};
 
 mod cli;
+mod ffmpeg;
 mod io;
 mod transforms;
 mod utils;
-mod ffmpeg;
 
 use crate::cli::*;
 use crate::io::*;
@@ -146,9 +151,7 @@ fn main() -> Result<()> {
                 let frame = group
                     // Unpack every frame in group
                     .axis_iter(Axis(0))
-                    .map(|bitplane| unpack_single(&bitplane, 1))
-                    // Convert all frames to f32 to avoid overflows when summing
-                    .map(|bitplane| bitplane.mapv(|x| x as f32))
+                    .map(|bitplane| unpack_single::<f32>(&bitplane, 1).unwrap())
                     // Sum frames together, use reduce not `.sum` as it's not
                     // implemented for this type, maybe use `accumulate_axis_inplace`
                     .reduce(|acc, e| acc + e)
@@ -186,8 +189,8 @@ fn main() -> Result<()> {
                 }
 
                 // Convert to image and rotate/flip as needed
-                let frame = array2rgbimage(frame.to_owned());
-                let mut frame = apply_transform(frame, &args.transform);
+                let frame = array2_to_grayimage(frame.to_owned());
+                let frame = apply_transform(frame, &args.transform);
 
                 if args.annotate {
                     let text = format!(
@@ -195,12 +198,17 @@ fn main() -> Result<()> {
                         i * args.burst_size + (start_offset as usize),
                         (i + 1) * args.burst_size + (start_offset as usize)
                     );
-                    annotate(&mut frame, &text);
-                }
+                    let mut frame = gray_to_rgbimage(&frame);
+                    annotate(&mut frame, &text, Rgb([252, 186, 3]));
 
-                // Throw error if we cannot save, and stop all processing.
-                let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
-                frame.save(&path)?;
+                    // Throw error if we cannot save, and stop all processing.
+                    let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+                    frame.save(&path)?;
+                } else {
+                    // Throw error if we cannot save, and stop all processing.
+                    let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+                    frame.save(&path)?;
+                }
 
                 Ok::<u32, anyhow::Error>(count + 1)
             },
