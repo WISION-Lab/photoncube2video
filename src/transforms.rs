@@ -59,7 +59,7 @@ pub fn array2rgbimage(frame: Array2<u8>) -> RgbImage {
 pub fn annotate(frame: &mut RgbImage, text: &str) {
     let font = Vec::from(include_bytes!("DejaVuSans.ttf") as &[u8]);
     let font = Font::try_from_vec(font).unwrap();
-    let scale = Scale { x: 20.0, y: 20.0 };
+    let scale = Scale { x: 25.0, y: 25.0 };
 
     draw_text_mut(frame, Rgb([252, 186, 3]), 5, 5, scale, &font, text);
     text_size(scale, &font, text);

@@ -5,6 +5,7 @@ use std::io::{BufReader, Read};
 use std::ops::BitOr;
 
 use anyhow::{anyhow, Result};
+use ffmpeg::{ensure_ffmpeg, make_video};
 use flate2::read::GzDecoder;
 use indicatif::{ParallelProgressIterator, ProgressStyle};
 use memmap2::Mmap;
@@ -18,6 +19,7 @@ mod cli;
 mod io;
 mod transforms;
 mod utils;
+mod ffmpeg;
 
 use crate::cli::*;
 use crate::io::*;
