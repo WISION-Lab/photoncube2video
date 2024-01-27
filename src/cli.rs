@@ -1,9 +1,19 @@
 use clap::{Parser, ValueEnum};
 
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum Transform {
+    Identity,
+    Rot90,
+    Rot180,
+    Rot270,
+    FlipUD,
+    FlipLR,
+}
+
 /// Convert a photon cube (npy file/directory of bin files) to a video preview (mp4) by naively averaging frames.
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-pub struct Args {
+pub struct Cli {
     /// Path to photon cube (npy file or directory of .bin files)
     #[arg(short, long)]
     pub input: String,
@@ -59,14 +69,4 @@ pub struct Args {
     /// If enabled, apply sRGB tonemapping to output
     #[arg(long, action)]
     pub tonemap2srgb: bool,
-}
-
-#[derive(ValueEnum, Clone, Copy, Debug)]
-pub enum Transform {
-    Identity,
-    Rot90,
-    Rot180,
-    Rot270,
-    FlipUD,
-    FlipLR,
 }

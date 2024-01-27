@@ -1,11 +1,16 @@
-use std::{fs::File, io::Read, ops::BitOr, path::Path};
+use std::{
+    fs::{File, OpenOptions},
+    io::Read,
+    ops::BitOr,
+    path::Path,
+};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Error, Result};
 use image::{io::Reader as ImageReader, Rgb};
-use indicatif::{ProgressBar, ProgressStyle};
-use memmap2::Mmap;
+use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use memmap2::{Mmap, MmapMut};
 use ndarray::{prelude::*, Array, Array3, ArrayView3, Axis, Slice};
-use ndarray_npy::{read_npy, ViewNpyError, ViewNpyExt};
+use ndarray_npy::{read_npy, write_zeroed_npy, ViewMutNpyExt, ViewNpyError, ViewNpyExt};
 use nshare::ToNdarray2;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
@@ -39,6 +44,77 @@ pub struct PhotonCube<'a> {
 enum PhotonCubeStorage {
     ArrayStorage(Array3<u8>),
     MmapStorage(Mmap),
+}
+type PhotonCubeView<'a> = ArrayView3<'a, u8>;
+
+trait VirtualExposure {
+    /// Create parallel iterator over all virtual exposures (bitplane averages of depth `step`)
+    fn par_virtual_exposures(
+        &self,
+        step: usize,
+        drop_last: bool,
+    ) -> impl IndexedParallelIterator<Item = Array2<f32>>;
+
+    /// Create a sequential iterator over all virtual exposures (bitplane averages of depth `step`)
+    fn virtual_exposures(&self, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>>;
+}
+
+impl<'a> VirtualExposure for PhotonCubeView<'a> {
+    fn par_virtual_exposures(
+        &self,
+        step: usize,
+        drop_last: bool,
+    ) -> impl IndexedParallelIterator<Item = Array2<f32>> {
+        let num_frames = if drop_last {
+            self.len_of(Axis(0)) / step
+        } else {
+            (self.len_of(Axis(0)) as f32 / step as f32).ceil() as usize
+        };
+
+        self.axis_chunks_iter(Axis(0), step)
+            // Make it parallel
+            .into_par_iter()
+            .map(|group| {
+                let (num_frames, _, _) = group.dim();
+                let mut frame = group
+                    // Iterate over all bitplanes in group
+                    .axis_iter(Axis(0))
+                    // Unpack every frame in group as a f32 array
+                    .map(|bitplane| unpack_single::<f32>(&bitplane, 1).unwrap())
+                    // Sum frames together (.sum not implemented for this type)
+                    .reduce(|acc, e| acc + e)
+                    .unwrap();
+                // Compute mean values
+                frame.mapv_inplace(|v| v / (num_frames as f32));
+                frame
+            })
+            .take(num_frames)
+    }
+
+    fn virtual_exposures(&self, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>> {
+        let num_frames = if drop_last {
+            self.len_of(Axis(0)) / step
+        } else {
+            (self.len_of(Axis(0)) as f32 / step as f32).ceil() as usize
+        };
+
+        self.axis_chunks_iter(Axis(0), step)
+            .map(|group| {
+                let (num_frames, _, _) = group.dim();
+                let mut frame = group
+                    // Iterate over all bitplanes in group
+                    .axis_iter(Axis(0))
+                    // Unpack every frame in group as a f32 array
+                    .map(|bitplane| unpack_single::<f32>(&bitplane, 1).unwrap())
+                    // Sum frames together (.sum not implemented for this type)
+                    .reduce(|acc, e| acc + e)
+                    .unwrap();
+                // Compute mean values
+                frame.mapv_inplace(|v| v / (num_frames as f32));
+                frame
+            })
+            .take(num_frames)
+    }
 }
 
 impl<'a> PhotonCube<'a> {
@@ -109,8 +185,70 @@ impl<'a> PhotonCube<'a> {
         }
     }
 
+    /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
+    /// in a streaming manner and ovoids loading all the data to memory. 
+    /// The `.npy` format enables memory mapping the photon cube and is usually faster.
+    pub fn convert_to_npy(src: &str, dst: &str, message: Option<&str>) -> Result<()> {
+        let path = Path::new(src);
+
+        if !path.exists() || !path.is_dir() {
+            // This should probably be a specific IO error?
+            Err(anyhow!("Directory of '.bin' files not found at {}!", src))
+        } else {
+            let (h, w) = (256, 512);
+            let paths = sorted_glob(path, "**/*.bin")?;
+
+            if paths.is_empty() {
+                return Err(anyhow!("No .bin files found in {}!", src));
+            }
+
+            // Create a (sparse if supported) file of zeroed data.
+            // Estimate shape of final array, one bin file is 512 raw
+            // half-frames, or 256 full array frames
+            let t = paths.len() * 512;
+            let file = File::create(dst)?;
+            write_zeroed_npy::<u8, _>(&file, (t, h, w / 8))?;
+
+            // Memory-map the file and create the mutable view.
+            let file = OpenOptions::new().read(true).write(true).open(dst)?;
+            let mut mmap = unsafe { MmapMut::map_mut(&file)? };
+            let mut view_mut = ArrayViewMut3::<u8>::view_mut_npy(&mut mmap)?;
+
+            // Modify the array, and write data to it in a streaming manner.
+            // TODO: Make this parallel? Not sure any speedup is possible...
+            let pbar = if let Some(msg) = message {
+                ProgressBar::new(paths.len() as u64)
+                    .with_style(ProgressStyle::with_template(
+                        "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+                    )?)
+                    .with_message(msg.to_owned())
+            } else {
+                ProgressBar::hidden()
+            };
+
+            // Read all files and assign to Memmapped npy
+            (paths, view_mut.axis_chunks_iter_mut(Axis(0), 512))
+                .into_par_iter()
+                .progress_with(pbar)
+                .try_for_each(|(p, mut chunk)| {
+                    let mut buffer = Vec::new();
+                    let mut f = File::open(p)?;
+                    f.read_to_end(&mut buffer)?;
+                    chunk.assign(
+                        &Array::from_iter(buffer.iter().map(|v| v.reverse_bits())).to_shape((
+                            512,
+                            h,
+                            w / 8,
+                        ))?,
+                    );
+                    Ok::<(), Error>(())
+                })?;
+            Ok(())
+        }
+    }
+
     /// Access the underlying data as a ArrayView3.
-    pub fn view(&self) -> Result<ArrayView3<u8>, ViewNpyError> {
+    pub fn view(&self) -> Result<PhotonCubeView, ViewNpyError> {
         match &self._storage {
             PhotonCubeStorage::ArrayStorage(arr) => Ok(arr.view()),
             PhotonCubeStorage::MmapStorage(mmap) => ArrayView3::<u8>::view_npy(mmap),
@@ -209,42 +347,6 @@ impl<'a> PhotonCube<'a> {
         }
     }
 
-    /// Create parallel iterator over all virtual exposures (bitplane averages of depth `step`)
-    pub fn par_virtual_exposures<'b>(
-        &'b self,
-        view: &'b ArrayView3<u8>,
-        drop_last: bool,
-    ) -> impl IndexedParallelIterator<Item = Array2<f32>> + 'b {
-        let num_frames = if drop_last {
-            self.len() / self.step.unwrap()
-        } else {
-            (self.len() as f32 / self.step.unwrap() as f32).ceil() as usize
-        };
-
-        view.axis_chunks_iter(
-            Axis(0),
-            self.step
-                .expect("Step must be set before virtual exposures can be created!"),
-        )
-        // Make it parallel
-        .into_par_iter()
-        .map(|group| {
-            let (num_frames, _, _) = group.dim();
-            let mut frame = group
-                // Iterate over all bitplanes in group
-                .axis_iter(Axis(0))
-                // Unpack every frame in group as a f32 array
-                .map(|bitplane| unpack_single::<f32>(&bitplane, 1).unwrap())
-                // Sum frames together (.sum not implemented for this type)
-                .reduce(|acc, e| acc + e)
-                .unwrap();
-            // Compute mean values
-            frame.mapv_inplace(|v| v / (num_frames as f32));
-            frame
-        })
-        .take(num_frames)
-    }
-
     /// Save all virtual exposures to a folder.
     pub fn save_images<F>(
         &'a self,
@@ -266,7 +368,7 @@ impl<'a> PhotonCube<'a> {
         // Create virtual exposures iterator over all data
         let view = self.view()?;
         let slice = view.slice_axis(Axis(0), Slice::new(self.start, self.end, 1));
-        let virtual_exps = self.par_virtual_exposures(&slice, true);
+        let virtual_exps = slice.par_virtual_exposures(self.step.unwrap(), true);
 
         // Conditionally setup a pbar
         let pbar = if let Some(msg) = message {

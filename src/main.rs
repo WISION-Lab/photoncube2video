@@ -8,7 +8,7 @@ use clap::Parser;
 use tempfile::tempdir;
 
 use crate::{
-    cli::Args,
+    cli::Cli,
     cube::PhotonCube,
     ffmpeg::{ensure_ffmpeg, make_video},
 };
@@ -26,7 +26,12 @@ fn print_type_of<T>(_: &T) {
 
 fn main() -> Result<()> {
     // Parse arguments defined in struct
-    let args = Args::parse();
+    let args = Cli::parse();
+
+    // if let Some(dst) = args.output {
+    //     PhotonCube::convert_to_npy(&args.input, &dst, Some("Converting..."))?;
+    // }
+    // return Ok(());
 
     // Ensure the user set at least one output
     if args.output.is_none() && args.img_dir.is_none() {
