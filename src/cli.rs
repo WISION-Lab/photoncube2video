@@ -1,4 +1,4 @@
-pub use clap::{Parser, ValueEnum};
+use clap::{Parser, ValueEnum};
 
 /// Convert a photon cube (npy file/directory of bin files) to a video preview (mp4) by naively averaging frames.
 #[derive(Parser)]
@@ -38,7 +38,7 @@ pub struct Args {
 
     /// If enabled, add bitplane indices to images
     #[arg(short, long, action)]
-    pub annotate: bool,
+    pub annotate_frames: bool,
 
     /// If enabled, swap columns that are out of order and crop to 254x496
     #[arg(long, action)]

@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use ffmpeg_sidecar::paths::sidecar_dir;
 use ffmpeg_sidecar::{
     command::{ffmpeg_is_installed, FfmpegCommand},
     event::{FfmpegEvent, FfmpegProgress},
+    paths::sidecar_dir,
 };
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -24,14 +24,20 @@ pub fn make_video(
     outfile: &str,
     fps: u64,
     num_frames: u64,
-    pbar_style: Option<ProgressStyle>,
+    message: Option<&str>,
     metadata: Option<HashMap<&str, &str>>,
 ) {
-    let pbar = if let Some(style) = pbar_style {
-        ProgressBar::new(num_frames).with_style(style)
-    } else {
-        ProgressBar::hidden()
-    };
+    // Conditionally setup a pbar
+    let pbar =
+        if let Some(msg) = message {
+            ProgressBar::new(num_frames)
+            .with_style(ProgressStyle::with_template(
+                "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+            ).expect("Invalid progress style."))
+            .with_message(msg.to_owned())
+        } else {
+            ProgressBar::hidden()
+        };
 
     let metadata_args = metadata
         .map(|map| {

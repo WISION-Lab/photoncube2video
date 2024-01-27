@@ -1,21 +1,18 @@
 use std::convert::{From, Into};
 
 use anyhow::{anyhow, Result};
-use imageproc::{
-    definitions::{Clamp, Image},
-    map::map_pixels,
-};
-use rand::Rng;
-use rusttype::{Font, Scale};
-
 use conv::ValueFrom;
 use image::{imageops, GrayImage, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
-use imageproc::drawing::{draw_text_mut, text_size};
-
+use imageproc::{
+    definitions::{Clamp, Image},
+    drawing::{draw_text_mut, text_size},
+    map::map_pixels,
+};
 use ndarray::{s, Array, Array2, Array3, ArrayView2, ArrayView3, Axis, Slice};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
-use num_traits::AsPrimitive;
+use rand::Rng;
+use rusttype::{Font, Scale};
 
 use crate::cli::Transform;
 
@@ -197,7 +194,10 @@ pub fn binary_avg_to_rgb(
     frame
 }
 
-pub fn process_colorspad(mut frame: Array2<u8>) -> Array2<u8> {
+pub fn process_colorspad<T>(mut frame: Array2<T>) -> Array2<T>
+where
+    T: Clone,
+{
     // Crop dead regions around edges
     let mut crop = frame.slice_mut(s![2.., ..496]);
 
@@ -219,9 +219,7 @@ pub fn interpolate_where_mask<T>(
     dither: bool,
 ) -> Result<Array2<T>>
 where
-    T: Into<f32> + Copy + 'static,
-    f32: AsPrimitive<T>,
-    bool: AsPrimitive<T>,
+    T: Into<f32> + Clamp<f32> + Copy + 'static,
 {
     let (h, w) = frame.dim();
     let (mask_h, mask_w) = mask.dim();
@@ -237,8 +235,8 @@ where
     let mut rng = rand::thread_rng();
     Ok(Array2::from_shape_fn((h, w), |(i, j)| {
         if mask[(i, j)] {
-            let mut counter = 0.0;
-            let mut value = 0.0;
+            let mut counter: f32 = 0.0;
+            let mut value: f32 = 0.0;
 
             for ki in [(i as isize) - 1, (i as isize) + 1] {
                 if (ki >= 0) && (ki < h as isize) {
@@ -253,11 +251,17 @@ where
                 }
             }
 
-            if dither {
-                (rng.gen_range(0.0..1.0) < (value / counter)).as_()
+            let value = if dither {
+                if rng.gen_range(0.0..1.0) < (value / counter) {
+                    1.0
+                } else {
+                    0.0
+                }
             } else {
-                ((value / counter).round()).as_()
-            }
+                value / counter
+            };
+
+            T::clamp(value)
         } else {
             frame[(i, j)]
         }
