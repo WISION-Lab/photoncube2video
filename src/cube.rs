@@ -186,7 +186,7 @@ impl<'a> PhotonCube<'a> {
     }
 
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
-    /// in a streaming manner and ovoids loading all the data to memory. 
+    /// in a streaming manner and ovoids loading all the data to memory.
     /// The `.npy` format enables memory mapping the photon cube and is usually faster.
     pub fn convert_to_npy(src: &str, dst: &str, message: Option<&str>) -> Result<()> {
         let path = Path::new(src);

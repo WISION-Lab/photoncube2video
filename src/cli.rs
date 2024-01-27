@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum Transform {
@@ -14,6 +14,29 @@ pub enum Transform {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
+    #[clap(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    Convert(ConvertArgs),
+    Preview(PreviewArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct ConvertArgs {
+    /// Path of input photon cube (directory of .bin files)
+    #[arg(short, long)]
+    pub input: String,
+
+    /// Path of output photon cube (must be .npy)
+    #[arg(short, long)]
+    pub output: String,
+}
+
+#[derive(Debug, Args)]
+pub struct PreviewArgs {
     /// Path to photon cube (npy file or directory of .bin files)
     #[arg(short, long)]
     pub input: String,

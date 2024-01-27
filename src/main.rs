@@ -5,6 +5,7 @@ use std::{collections::HashMap, convert::From, fs::create_dir_all, path::Path};
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
+use cli::{Commands, PreviewArgs};
 use tempfile::tempdir;
 
 use crate::{
@@ -24,15 +25,7 @@ fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
 }
 
-fn main() -> Result<()> {
-    // Parse arguments defined in struct
-    let args = Cli::parse();
-
-    // if let Some(dst) = args.output {
-    //     PhotonCube::convert_to_npy(&args.input, &dst, Some("Converting..."))?;
-    // }
-    // return Ok(());
-
+fn preview(args: PreviewArgs) -> Result<()> {
     // Ensure the user set at least one output
     if args.output.is_none() && args.img_dir.is_none() {
         return Err(anyhow!(
@@ -86,4 +79,16 @@ fn main() -> Result<()> {
     }
     tmp_dir.close()?;
     Ok(())
+}
+
+fn main() -> Result<()> {
+    // Parse arguments defined in struct
+    let args = Cli::parse();
+
+    match args.command {
+        Commands::Convert(args) => {
+            PhotonCube::convert_to_npy(&args.input, &args.output, Some("Converting..."))
+        }
+        Commands::Preview(args) => preview(args),
+    }
 }
