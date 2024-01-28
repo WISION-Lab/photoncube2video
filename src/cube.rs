@@ -109,6 +109,7 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
     }
 }
 
+// Note: Methods in this `impl` block aren't exposed to python
 impl PhotonCube {
     /// Open a photoncube from a memmapped `.npy` file.
     /// Note: Loading from a directory of .bin files has been deprecated
@@ -135,104 +136,6 @@ impl PhotonCube {
             step: None,
             _storage: mmap,
         })
-    }
-
-    /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
-    /// in a streaming manner and ovoids loading all the data to memory.
-    /// The `.npy` format enables memory mapping the photon cube and is usually faster.
-    /// Note: Function assumes either 256x512 of 512x512 frames that are bitpacked along width dim.
-    pub fn convert_to_npy(
-        src: &str,
-        dst: &str,
-        is_full_array: bool,
-        message: Option<&str>,
-    ) -> Result<()> {
-        let path = Path::new(src);
-
-        if !path.exists() || !path.is_dir() {
-            // This should probably be a specific IO error?
-            Err(anyhow!("Directory of `.bin` files not found at {}!", src))
-        } else {
-            let paths = sorted_glob(path, "**/*.bin")?;
-            if paths.is_empty() {
-                return Err(anyhow!("No .bin files found in {}!", src));
-            }
-
-            // Create a (sparse if supported) file of zeroed data.
-            // Estimate shape of final array, one bin file is 512 raw
-            // half-frames, or 256 full array frames
-            let batch_size = if is_full_array { 256 } else { 512 };
-            let (h, w) = if is_full_array {
-                (512, 512 / 8)
-            } else {
-                (256, 512 / 8)
-            };
-            let t = paths.len() * batch_size;
-            let file = File::create(dst)?;
-            write_zeroed_npy::<u8, _>(&file, (t, h, w))?;
-
-            // Memory-map the file and create the mutable view.
-            let file = OpenOptions::new().read(true).write(true).open(dst)?;
-            let mut mmap = unsafe { MmapMut::map_mut(&file)? };
-            let mut view_mut = ArrayViewMut3::<u8>::view_mut_npy(&mut mmap)?;
-
-            // Modify the array, and write data to it in a streaming manner.
-            // TODO: Make this parallel? Not sure any speedup is possible...
-            let pbar = if let Some(msg) = message {
-                ProgressBar::new(paths.len() as u64)
-                    .with_style(ProgressStyle::with_template(
-                        "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
-                    )?)
-                    .with_message(msg.to_owned())
-            } else {
-                ProgressBar::hidden()
-            };
-
-            // Read all files and assign to Memmapped npy
-            (paths, view_mut.axis_chunks_iter_mut(Axis(0), batch_size))
-                .into_par_iter()
-                .progress_with(pbar)
-                .try_for_each(|(p, mut chunk)| {
-                    let mut buffer = Vec::new();
-                    let mut f = File::open(p)?;
-                    f.read_to_end(&mut buffer)?;
-
-                    if is_full_array {
-                        // Raw data is saved as 1/4th of the top array (h, w/4) then a quarter of the
-                        // bottom array, but flipped up/down, and repeat. We read out all data in a
-                        // buffer that's (h/2, w*2), meaning there's 8 interleaved zones:
-                        // Top (1/4), Flipped Btm (1/4), Top (2/4), Flipped Btm (2/4), etc...
-                        let flat_data = Array::from_iter(buffer.iter().map(|v| v.reverse_bits()));
-                        let data = flat_data.to_shape((batch_size, h / 2, w * 2))?.into_owned();
-
-                        // Iterate over array quarters and assign as needed.
-                        // Data: (256, 1024) -> src_chunk: (256, 256) -> top/btm_src: (256, 128)
-                        // Chunk: (512, 512) -> dst_chunk: (512, 128) -> top_btm_dst: (256, 128)
-                        multizip((
-                            data.axis_chunks_iter(Axis(2), w / 2),
-                            chunk.axis_chunks_iter_mut(Axis(2), w / 4),
-                        ))
-                        .for_each(|(src_chunk, mut dst_chunk)| {
-                            let (top_src, btm_src) = src_chunk.split_at(Axis(2), w / 4);
-                            let (mut top_dst, mut btm_dst) = dst_chunk.multi_slice_mut((
-                                s![.., ..(h / 2), ..],
-                                s![.., (h/2)..;-1, ..], // We flip the btm array here!
-                            ));
-
-                            top_dst.assign(&top_src);
-                            btm_dst.assign(&btm_src);
-                        });
-                    } else {
-                        chunk.assign(
-                            &Array::from_iter(buffer.iter().map(|v| v.reverse_bits()))
-                                .to_shape((batch_size, h, w))?,
-                        );
-                    }
-
-                    Ok::<(), Error>(())
-                })?;
-            Ok(())
-        }
     }
 
     /// Access the underlying data as a ArrayView3.
@@ -404,8 +307,105 @@ impl PhotonCube {
     }
 }
 
-#[pymodule]
-fn photoncube2video(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
-    m.add_class::<PhotonCube>()?;
-    Ok(())
+// Note: Methods in this `impl` block are exposed to python
+#[pymethods]
+impl PhotonCube {
+    /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
+    /// in a streaming manner and ovoids loading all the data to memory.
+    /// The `.npy` format enables memory mapping the photon cube and is usually faster.
+    /// Note: Function assumes either 256x512 of 512x512 frames that are bitpacked along width dim.
+    #[staticmethod]
+    pub fn convert_to_npy(
+        src: &str,
+        dst: &str,
+        is_full_array: bool,
+        message: Option<&str>,
+    ) -> PyResult<()> {
+        let path = Path::new(src);
+
+        if !path.exists() || !path.is_dir() {
+            // This should probably be a specific IO error?
+            Err(anyhow!("Directory of `.bin` files not found at {}!", src).into())
+        } else {
+            let paths = sorted_glob(path, "**/*.bin")?;
+            if paths.is_empty() {
+                return Err(anyhow!("No .bin files found in {}!", src).into());
+            }
+
+            // Create a (sparse if supported) file of zeroed data.
+            // Estimate shape of final array, one bin file is 512 raw
+            // half-frames, or 256 full array frames
+            let batch_size = if is_full_array { 256 } else { 512 };
+            let (h, w) = if is_full_array {
+                (512, 512 / 8)
+            } else {
+                (256, 512 / 8)
+            };
+            let t = paths.len() * batch_size;
+            let file = File::create(dst)?;
+            write_zeroed_npy::<u8, _>(&file, (t, h, w)).map_err(|e| anyhow!(e))?;
+
+            // Memory-map the file and create the mutable view.
+            let file = OpenOptions::new().read(true).write(true).open(dst)?;
+            let mut mmap = unsafe { MmapMut::map_mut(&file)? };
+            let mut view_mut =
+                ArrayViewMut3::<u8>::view_mut_npy(&mut mmap).map_err(|e| anyhow!(e))?;
+
+            // Modify the array, and write data to it in a streaming manner.
+            // TODO: Make this parallel? Not sure any speedup is possible...
+            let pbar = if let Some(msg) = message {
+                ProgressBar::new(paths.len() as u64)
+                    .with_style(ProgressStyle::with_template(
+                        "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+                    ).map_err(|e| anyhow!(e))?)
+                    .with_message(msg.to_owned())
+            } else {
+                ProgressBar::hidden()
+            };
+
+            // Read all files and assign to Memmapped npy
+            (paths, view_mut.axis_chunks_iter_mut(Axis(0), batch_size))
+                .into_par_iter()
+                .progress_with(pbar)
+                .try_for_each(|(p, mut chunk)| {
+                    let mut buffer = Vec::new();
+                    let mut f = File::open(p)?;
+                    f.read_to_end(&mut buffer)?;
+
+                    if is_full_array {
+                        // Raw data is saved as 1/4th of the top array (h, w/4) then a quarter of the
+                        // bottom array, but flipped up/down, and repeat. We read out all data in a
+                        // buffer that's (h/2, w*2), meaning there's 8 interleaved zones:
+                        // Top (1/4), Flipped Btm (1/4), Top (2/4), Flipped Btm (2/4), etc...
+                        let flat_data = Array::from_iter(buffer.iter().map(|v| v.reverse_bits()));
+                        let data = flat_data.to_shape((batch_size, h / 2, w * 2))?.into_owned();
+
+                        // Iterate over array quarters and assign as needed.
+                        // Data: (256, 1024) -> src_chunk: (256, 256) -> top/btm_src: (256, 128)
+                        // Chunk: (512, 512) -> dst_chunk: (512, 128) -> top_btm_dst: (256, 128)
+                        multizip((
+                            data.axis_chunks_iter(Axis(2), w / 2),
+                            chunk.axis_chunks_iter_mut(Axis(2), w / 4),
+                        ))
+                        .for_each(|(src_chunk, mut dst_chunk)| {
+                            let (top_src, btm_src) = src_chunk.split_at(Axis(2), w / 4);
+                            let (mut top_dst, mut btm_dst) = dst_chunk.multi_slice_mut((
+                                s![.., ..(h / 2), ..],
+                                s![.., (h/2)..;-1, ..], // We flip the btm array here!
+                            ));
+
+                            top_dst.assign(&top_src);
+                            btm_dst.assign(&btm_src);
+                        });
+                    } else {
+                        chunk.assign(
+                            &Array::from_iter(buffer.iter().map(|v| v.reverse_bits()))
+                                .to_shape((batch_size, h, w))?,
+                        );
+                    }
+                    Ok::<(), Error>(())
+                })?;
+            Ok(())
+        }
+    }
 }

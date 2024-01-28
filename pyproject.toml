@@ -14,3 +14,6 @@ dynamic = ["version"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+
+[project.scripts]
+photoncube2video = "photoncube2video:cli_entrypoint"
