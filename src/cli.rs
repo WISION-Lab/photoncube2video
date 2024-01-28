@@ -41,7 +41,7 @@ pub struct ConvertArgs {
 
 #[derive(Debug, Args)]
 pub struct PreviewArgs {
-    /// Path to photon cube (npy file or directory of .bin files)
+    /// Path to photon cube (.npy file expected)
     #[arg(short, long)]
     pub input: String,
 
@@ -80,10 +80,6 @@ pub struct PreviewArgs {
     /// If enabled, swap columns that are out of order and crop to 254x496
     #[arg(long, action)]
     pub colorspad_fix: bool,
-
-    /// If enabled, assume data is 512x512
-    #[arg(long, action)]
-    pub full_array: bool,
 
     /// Index of binary frame at which to start the preview from (inclusive)
     #[arg(short, long, default_value = None)]

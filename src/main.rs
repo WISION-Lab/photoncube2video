@@ -34,12 +34,7 @@ fn preview(args: PreviewArgs) -> Result<()> {
     }
 
     // Load all the neccesary files
-    let size = if args.full_array {
-        (512, 512)
-    } else {
-        (256, 512)
-    };
-    let mut cube = PhotonCube::open(&args.input, size)?;
+    let mut cube = PhotonCube::open(&args.input)?;
     if let Some(cfa_path) = args.cfa_path {
         cube.load_cfa(&cfa_path)?;
     }

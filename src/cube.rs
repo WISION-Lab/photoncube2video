@@ -118,69 +118,32 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
 }
 
 impl<'a> PhotonCube<'a> {
-    /// Open a photoncube from a file, either a memmapped .npy file or a directory
-    /// of .bin files is accepted, with the later being entirely loaded into memory.
-    /// The `size` argument is only used when opening a .bin photoncube.  
-    pub fn open(path_str: &'a str, size: (usize, usize)) -> Result<Self> {
+    /// Open a photoncube from a memmapped `.npy`` file.
+    /// Note: Loading from a directory of .bin files has been deprecated
+    /// as it is non-trivial to do when using the full-array and requires
+    /// entirely loading the photoncube into memory. Convert to `.npy` first.
+    pub fn open(path_str: &'a str) -> Result<Self> {
         let path = Path::new(path_str);
+        let ext = path.extension().unwrap().to_ascii_lowercase();
 
-        if !path.exists() {
+        if !path.exists() || !path.is_file() || ext != "npy" {
             // This should probably be a specific IO error?
-            Err(anyhow!("File not found at {}!", path_str))
-        } else if path.is_dir() {
-            let paths = sorted_glob(path, "**/*.bin")?;
-            if paths.is_empty() {
-                return Err(anyhow!("No .bin files found in {}!", path_str));
-            }
-
-            let mut buffer = Vec::new();
-
-            for p in paths {
-                let mut f = File::open(p)?;
-                f.read_to_end(&mut buffer)?;
-            }
-
-            let (h, w) = size;
-            let t = buffer.len() / (h * w / 8);
-            let arr = Array::from_vec(buffer)
-                .into_shape((t, h, w / 8))?
-                .mapv(|v| v.reverse_bits());
-
-            Ok(Self {
-                path: path_str,
-                cfa_mask: None,
-                inpaint_mask: None,
-                start: 0,
-                end: None,
-                step: None,
-                _storage: PhotonCubeStorage::ArrayStorage(arr),
-                _slice: None,
-            })
-        } else {
-            let ext = path.extension().unwrap().to_ascii_lowercase();
-
-            if ext != "npy" {
-                // TODO: This should probably be a specific IO error?
-                return Err(anyhow!(
-                    "Expected numpy array with `.npy` extension, got {:?}.",
-                    ext
-                ));
-            }
-
-            let file = File::open(path_str)?;
-            let mmap = unsafe { Mmap::map(&file)? };
-
-            Ok(Self {
-                path: path_str,
-                cfa_mask: None,
-                inpaint_mask: None,
-                start: 0,
-                end: None,
-                step: None,
-                _storage: PhotonCubeStorage::MmapStorage(mmap),
-                _slice: None,
-            })
+            return Err(anyhow!("No `.npy` file found at {}!", path_str));
         }
+
+        let file = File::open(path_str)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+
+        Ok(Self {
+            path: path_str,
+            cfa_mask: None,
+            inpaint_mask: None,
+            start: 0,
+            end: None,
+            step: None,
+            _storage: PhotonCubeStorage::MmapStorage(mmap),
+            _slice: None,
+        })
     }
 
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
@@ -197,7 +160,7 @@ impl<'a> PhotonCube<'a> {
 
         if !path.exists() || !path.is_dir() {
             // This should probably be a specific IO error?
-            Err(anyhow!("Directory of '.bin' files not found at {}!", src))
+            Err(anyhow!("Directory of `.bin` files not found at {}!", src))
         } else {
             let paths = sorted_glob(path, "**/*.bin")?;
             if paths.is_empty() {
