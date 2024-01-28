@@ -89,7 +89,7 @@ pub struct PreviewArgs {
     #[arg(short, long, default_value = None)]
     pub end: Option<isize>,
 
-    /// If enabled, invert the SPAD's response (bernouilli process)
+    /// If enabled, invert the SPAD's response (Bernoulli process)
     #[arg(long, action)]
     pub invert_response: bool,
 

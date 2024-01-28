@@ -10,9 +10,10 @@ use image::{io::Reader as ImageReader, Rgb};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use itertools::multizip;
 use memmap2::{Mmap, MmapMut};
-use ndarray::{prelude::*, Array, Array3, ArrayView3, Axis, Slice};
+use ndarray::{prelude::*, Array, ArrayView3, Axis, Slice};
 use ndarray_npy::{read_npy, write_zeroed_npy, ViewMutNpyExt, ViewNpyError, ViewNpyExt};
 use nshare::ToNdarray2;
+use pyo3::prelude::*;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use crate::{
@@ -25,25 +26,16 @@ use crate::{
 };
 
 #[allow(dead_code)]
+#[pyclass]
 #[derive(Debug)]
-pub struct PhotonCube<'a> {
-    path: &'a str,
+pub struct PhotonCube {
+    path: String,
     cfa_mask: Option<Array2<bool>>,
     inpaint_mask: Option<Array2<bool>>,
     start: isize,
     end: Option<isize>,
     step: Option<usize>,
-    _storage: PhotonCubeStorage,
-    _slice: Option<ArrayView3<'a, u8>>,
-}
-
-// These are needed to keep the underlying object's data in scope
-// otherwise we get a use-after-free error.
-// We use an enum here as either an array OR a memap object is needed.
-#[derive(Debug)]
-enum PhotonCubeStorage {
-    ArrayStorage(Array3<u8>),
-    MmapStorage(Mmap),
+    _storage: Mmap,
 }
 type PhotonCubeView<'a> = ArrayView3<'a, u8>;
 
@@ -117,12 +109,12 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
     }
 }
 
-impl<'a> PhotonCube<'a> {
-    /// Open a photoncube from a memmapped `.npy`` file.
+impl PhotonCube {
+    /// Open a photoncube from a memmapped `.npy` file.
     /// Note: Loading from a directory of .bin files has been deprecated
     /// as it is non-trivial to do when using the full-array and requires
     /// entirely loading the photoncube into memory. Convert to `.npy` first.
-    pub fn open(path_str: &'a str) -> Result<Self> {
+    pub fn open(path_str: &str) -> Result<Self> {
         let path = Path::new(path_str);
         let ext = path.extension().unwrap().to_ascii_lowercase();
 
@@ -135,14 +127,13 @@ impl<'a> PhotonCube<'a> {
         let mmap = unsafe { Mmap::map(&file)? };
 
         Ok(Self {
-            path: path_str,
+            path: path_str.to_string(),
             cfa_mask: None,
             inpaint_mask: None,
             start: 0,
             end: None,
             step: None,
-            _storage: PhotonCubeStorage::MmapStorage(mmap),
-            _slice: None,
+            _storage: mmap,
         })
     }
 
@@ -246,10 +237,7 @@ impl<'a> PhotonCube<'a> {
 
     /// Access the underlying data as a ArrayView3.
     pub fn view(&self) -> Result<PhotonCubeView, ViewNpyError> {
-        match &self._storage {
-            PhotonCubeStorage::ArrayStorage(arr) => Ok(arr.view()),
-            PhotonCubeStorage::MmapStorage(mmap) => ArrayView3::<u8>::view_npy(mmap),
-        }
+        ArrayView3::<u8>::view_npy(&self._storage)
     }
 
     /// Set the range of the photoncube, this is used for slicing and frame preview
@@ -310,11 +298,11 @@ impl<'a> PhotonCube<'a> {
 
     /// Return function to process a single virtual exposure, depends on any masks (cfa/inpaint).
     pub fn process_single(
-        &'a self,
+        &self,
         invert_response: bool,
         tonemap2srgb: bool,
         colorspad_fix: bool,
-    ) -> impl Fn(Array2<f32>) -> Result<Array2<f32>> + 'a {
+    ) -> impl Fn(Array2<f32>) -> Result<Array2<f32>> + '_ {
         move |mut frame| {
             // Invert SPAD response
             if invert_response {
@@ -345,17 +333,14 @@ impl<'a> PhotonCube<'a> {
     }
 
     /// Save all virtual exposures to a folder.
-    pub fn save_images<F>(
-        &'a self,
+    pub fn save_images(
+        &self,
         img_dir: &str,
-        process_fn: Option<F>,
+        process_fn: Option<impl Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync>,
         annotate_frames: bool,
         transform: &[Transform],
         message: Option<&str>,
-    ) -> Result<isize>
-    where
-        F: Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync,
-    {
+    ) -> Result<isize> {
         if self.step.is_none() {
             return Err(anyhow!(
                 "Step must be set before virtual exposures can be created!"
@@ -417,4 +402,10 @@ impl<'a> PhotonCube<'a> {
             .try_reduce(|| 0, |acc, x| Ok(acc + x))?;
         Ok(num_frames)
     }
+}
+
+#[pymodule]
+fn photoncube2video(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+    m.add_class::<PhotonCube>()?;
+    Ok(())
 }

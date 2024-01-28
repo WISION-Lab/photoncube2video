@@ -97,11 +97,26 @@ Options:
   -e, --end <END>
           Index of binary frame at which to end the preview at (exclusive)
       --invert-response
-          If enabled, invert the SPAD's response (bernouilli process)
+          If enabled, invert the SPAD's response (Bernoulli process)
       --tonemap2srgb
           If enabled, apply sRGB tonemapping to output
   -h, --help
           Print help
   -V, --version
           Print version
+```
+
+### Development
+
+#### Code Quality
+
+We use `rustfmt` to format the codebase, we use some customizations (i.e for import sorting) which require nightly, use:
+```
+cargo +nightly fmt 
+```
+
+To keep the project lean, it's recommended to check for unused dependencies [using this tool](https://github.com/est31/cargo-udeps), like so: 
+
+```
+cargo +nightly udeps
 ```
