@@ -8,6 +8,7 @@ use std::{
 use anyhow::{anyhow, Error, Result};
 use image::{io::Reader as ImageReader, Rgb};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
+use itertools::multizip;
 use memmap2::{Mmap, MmapMut};
 use ndarray::{prelude::*, Array, Array3, ArrayView3, Axis, Slice};
 use ndarray_npy::{read_npy, write_zeroed_npy, ViewMutNpyExt, ViewNpyError, ViewNpyExt};
@@ -27,7 +28,6 @@ use crate::{
 #[derive(Debug)]
 pub struct PhotonCube<'a> {
     path: &'a str,
-    bit_depth: u32,
     cfa_mask: Option<Array2<bool>>,
     inpaint_mask: Option<Array2<bool>>,
     start: isize,
@@ -120,16 +120,15 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
 impl<'a> PhotonCube<'a> {
     /// Open a photoncube from a file, either a memmapped .npy file or a directory
     /// of .bin files is accepted, with the later being entirely loaded into memory.
-    pub fn open(path_str: &'a str) -> Result<Self> {
+    /// The `size` argument is only used when opening a .bin photoncube.  
+    pub fn open(path_str: &'a str, size: (usize, usize)) -> Result<Self> {
         let path = Path::new(path_str);
 
         if !path.exists() {
             // This should probably be a specific IO error?
             Err(anyhow!("File not found at {}!", path_str))
         } else if path.is_dir() {
-            let (h, w) = (256, 512);
             let paths = sorted_glob(path, "**/*.bin")?;
-
             if paths.is_empty() {
                 return Err(anyhow!("No .bin files found in {}!", path_str));
             }
@@ -141,6 +140,7 @@ impl<'a> PhotonCube<'a> {
                 f.read_to_end(&mut buffer)?;
             }
 
+            let (h, w) = size;
             let t = buffer.len() / (h * w / 8);
             let arr = Array::from_vec(buffer)
                 .into_shape((t, h, w / 8))?
@@ -148,7 +148,6 @@ impl<'a> PhotonCube<'a> {
 
             Ok(Self {
                 path: path_str,
-                bit_depth: 1,
                 cfa_mask: None,
                 inpaint_mask: None,
                 start: 0,
@@ -173,7 +172,6 @@ impl<'a> PhotonCube<'a> {
 
             Ok(Self {
                 path: path_str,
-                bit_depth: 1,
                 cfa_mask: None,
                 inpaint_mask: None,
                 start: 0,
@@ -188,16 +186,20 @@ impl<'a> PhotonCube<'a> {
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
     /// in a streaming manner and ovoids loading all the data to memory.
     /// The `.npy` format enables memory mapping the photon cube and is usually faster.
-    pub fn convert_to_npy(src: &str, dst: &str, message: Option<&str>) -> Result<()> {
+    /// Note: Function assumes either 256x512 of 512x512 frames that are bitpacked along width dim.
+    pub fn convert_to_npy(
+        src: &str,
+        dst: &str,
+        is_full_array: bool,
+        message: Option<&str>,
+    ) -> Result<()> {
         let path = Path::new(src);
 
         if !path.exists() || !path.is_dir() {
             // This should probably be a specific IO error?
             Err(anyhow!("Directory of '.bin' files not found at {}!", src))
         } else {
-            let (h, w) = (256, 512);
             let paths = sorted_glob(path, "**/*.bin")?;
-
             if paths.is_empty() {
                 return Err(anyhow!("No .bin files found in {}!", src));
             }
@@ -205,9 +207,15 @@ impl<'a> PhotonCube<'a> {
             // Create a (sparse if supported) file of zeroed data.
             // Estimate shape of final array, one bin file is 512 raw
             // half-frames, or 256 full array frames
-            let t = paths.len() * 512;
+            let batch_size = if is_full_array { 256 } else { 512 };
+            let (h, w) = if is_full_array {
+                (512, 512 / 8)
+            } else {
+                (256, 512 / 8)
+            };
+            let t = paths.len() * batch_size;
             let file = File::create(dst)?;
-            write_zeroed_npy::<u8, _>(&file, (t, h, w / 8))?;
+            write_zeroed_npy::<u8, _>(&file, (t, h, w))?;
 
             // Memory-map the file and create the mutable view.
             let file = OpenOptions::new().read(true).write(true).open(dst)?;
@@ -227,20 +235,46 @@ impl<'a> PhotonCube<'a> {
             };
 
             // Read all files and assign to Memmapped npy
-            (paths, view_mut.axis_chunks_iter_mut(Axis(0), 512))
+            (paths, view_mut.axis_chunks_iter_mut(Axis(0), batch_size))
                 .into_par_iter()
                 .progress_with(pbar)
                 .try_for_each(|(p, mut chunk)| {
                     let mut buffer = Vec::new();
                     let mut f = File::open(p)?;
                     f.read_to_end(&mut buffer)?;
-                    chunk.assign(
-                        &Array::from_iter(buffer.iter().map(|v| v.reverse_bits())).to_shape((
-                            512,
-                            h,
-                            w / 8,
-                        ))?,
-                    );
+
+                    if is_full_array {
+                        // Raw data is saved as 1/4th of the top array (h, w/4) then a quarter of the
+                        // bottom array, but flipped up/down, and repeat. We read out all data in a
+                        // buffer that's (h/2, w*2), meaning there's 8 interleaved zones:
+                        // Top (1/4), Flipped Btm (1/4), Top (2/4), Flipped Btm (2/4), etc...
+                        let flat_data = Array::from_iter(buffer.iter().map(|v| v.reverse_bits()));
+                        let data = flat_data.to_shape((batch_size, h / 2, w * 2))?.into_owned();
+
+                        // Iterate over array quarters and assign as needed.
+                        // Data: (256, 1024) -> src_chunk: (256, 256) -> top/btm_src: (256, 128)
+                        // Chunk: (512, 512) -> dst_chunk: (512, 128) -> top_btm_dst: (256, 128)
+                        multizip((
+                            data.axis_chunks_iter(Axis(2), w / 2),
+                            chunk.axis_chunks_iter_mut(Axis(2), w / 4),
+                        ))
+                        .for_each(|(src_chunk, mut dst_chunk)| {
+                            let (top_src, btm_src) = src_chunk.split_at(Axis(2), w / 4);
+                            let (mut top_dst, mut btm_dst) = dst_chunk.multi_slice_mut((
+                                s![.., ..(h / 2), ..],
+                                s![.., (h/2)..;-1, ..], // We flip the btm array here!
+                            ));
+
+                            top_dst.assign(&top_src);
+                            btm_dst.assign(&btm_src);
+                        });
+                    } else {
+                        chunk.assign(
+                            &Array::from_iter(buffer.iter().map(|v| v.reverse_bits()))
+                                .to_shape((batch_size, h, w))?,
+                        );
+                    }
+
                     Ok::<(), Error>(())
                 })?;
             Ok(())

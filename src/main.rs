@@ -34,7 +34,12 @@ fn preview(args: PreviewArgs) -> Result<()> {
     }
 
     // Load all the neccesary files
-    let mut cube = PhotonCube::open(&args.input)?;
+    let size = if args.full_array {
+        (512, 512)
+    } else {
+        (256, 512)
+    };
+    let mut cube = PhotonCube::open(&args.input, size)?;
     if let Some(cfa_path) = args.cfa_path {
         cube.load_cfa(&cfa_path)?;
     }
@@ -86,9 +91,12 @@ fn main() -> Result<()> {
     let args = Cli::parse();
 
     match args.command {
-        Commands::Convert(args) => {
-            PhotonCube::convert_to_npy(&args.input, &args.output, Some("Converting..."))
-        }
+        Commands::Convert(args) => PhotonCube::convert_to_npy(
+            &args.input,
+            &args.output,
+            args.full_array,
+            Some("Converting..."),
+        ),
         Commands::Preview(args) => preview(args),
     }
 }
