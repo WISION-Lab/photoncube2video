@@ -132,7 +132,7 @@ where
     text_size(scale, &font, text);
 }
 
-pub fn apply_transform<P>(frame: Image<P>, transform: &[Transform]) -> Image<P>
+pub fn apply_transforms<P>(frame: Image<P>, transform: &[Transform]) -> Image<P>
 where
     P: Pixel + 'static,
 {

@@ -36,6 +36,10 @@ tempfile = "3.9.0"
 # Pin pyo3 to 0.15.2 as it's the last version to support py36, see: https://github.com/PyO3/maturin/pull/945
 pyo3 = { version = "0.15.2", features = ["extension-module", "anyhow", "abi3-py36"] }
 
+numpy = "0.15.1"
+strum_macros = "0.26.1"
+strum = { version = "0.26.1", features = ["derive"] }
+
 [profile.release]
 lto = true
 

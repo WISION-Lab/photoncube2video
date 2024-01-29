@@ -3,14 +3,17 @@ use std::{collections::HashMap, convert::From, env, fs::create_dir_all, path::Pa
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pyo3::prelude::*;
+use strum_macros::EnumString;
 use tempfile::tempdir;
 
 use crate::{
-    cube::PhotonCube,
-    ffmpeg::{ensure_ffmpeg, make_video},
+    cube::PhotonCube, ffmpeg::{ensure_ffmpeg, make_video}, signals::DeferedSignal
 };
 
-#[derive(ValueEnum, Clone, Copy, Debug)]
+// Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
+// we use `EnumString` to convert strings into their enum values. 
+// TODO: Use pyclass and remove strum dependency when we drop py36 support.
+#[derive(ValueEnum, Clone, Copy, Debug, EnumString)]
 pub enum Transform {
     Identity,
     Rot90,
@@ -20,7 +23,7 @@ pub enum Transform {
     FlipLR,
 }
 
-/// Convert a photon cube (npy file/directory of bin files) between formats or to 
+/// Convert a photon cube (npy file/directory of bin files) between formats or to
 /// a video preview (mp4) by naively averaging frames.
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -138,13 +141,13 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
     create_dir_all(&img_dir).ok();
 
     // Generate preview frames
-    cube.set_range(args.start.unwrap_or(0), args.end, args.burst_size);
+    cube.set_range(args.start.unwrap_or(0), args.end, Some(args.burst_size));
+    cube.set_transforms(args.transform);
     let process = cube.process_single(args.invert_response, args.tonemap2srgb, args.colorspad_fix);
     let num_frames = cube.save_images(
         &img_dir,
         Some(process),
         args.annotate_frames,
-        &args.transform[..],
         Some("Processing Frames..."),
     )?;
 
@@ -170,20 +173,15 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
 }
 
 #[pyfunction]
-pub fn cli_entrypoint() -> Result<()> {
-    // Start by telling python to not intercept CTRL+C signal, 
+pub fn cli_entrypoint(py: Python) -> Result<()> {
+    // Start by telling python to not intercept CTRL+C signal,
     // Otherwise we won't get it here and will not be interruptable.
     // See: https://github.com/PyO3/pyo3/pull/3560
-    Python::with_gil(|py| -> PyResult<()> {
-        // Set SIGINT to have the default action
-        let signal = py.import("signal")?;
-        signal.getattr("signal")?
-            .call1((signal.getattr("SIGINT")?, signal.getattr("SIG_DFL")?)).map(|_| ())
-    })?;
+    let _defer = DeferedSignal::new(py, "SIGINT")?;
 
     // Parse arguments defined in struct
-    // Since we're actually calling this via python, the first argument 
-    // is going to be the path to the python interpreter, so we skip it. 
+    // Since we're actually calling this via python, the first argument
+    // is going to be the path to the python interpreter, so we skip it.
     // See: https://www.maturin.rs/bindings#both-binary-and-library
     let args = Cli::parse_from(env::args_os().skip(1));
 

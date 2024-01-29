@@ -13,7 +13,7 @@ Limitations:
 ### Getting Started 
 To compile it locally, simply clone the repository, `cd` into it and run:
 ```
-pip install . 
+pip install -v . 
 ```
 Ensure you have an up-to-date pip, else this might fail. This should work for python >= 3.6.
 
@@ -27,11 +27,26 @@ If this is your first time compiling a rust project, this may take a few minutes
 from photoncube2video import PhotonCube
 
 PhotonCube.convert_to_npy(
-        "full-array/binary/16kHz/", 
-        "test.npy", 
-        is_full_array=True, 
-        message="Converting..."
+    # Directory containing `.bin` files
+    "full-array/binary/16kHz/", 
+    "test.npy", 
+    is_full_array=True, 
+    message="Converting..."
 )
+
+# Open cube 
+pc = PhotonCube.open("test.npy")
+
+# Load inpainting masks, both .png and .npy supported.
+pc.load_mask("dead_pixels.png")
+pc.load_mask("hot_pixels.npy")
+
+# Inpainting masks will be OR'ed together
+print(pc.inpaint_mask)
+
+# If using colorspad, you can specify the color filter array 
+# and all non-white pixels will be interpolated out
+pc.load_cfa("cfa.png")
 ```
 
 ### CLI Usage:

@@ -3,6 +3,7 @@ use std::{
     io::Read,
     ops::BitOr,
     path::Path,
+    str::FromStr,
 };
 
 use anyhow::{anyhow, Error, Result};
@@ -13,28 +14,40 @@ use memmap2::{Mmap, MmapMut};
 use ndarray::{prelude::*, Array, ArrayView3, Axis, Slice};
 use ndarray_npy::{read_npy, write_zeroed_npy, ViewMutNpyExt, ViewNpyError, ViewNpyExt};
 use nshare::ToNdarray2;
-use pyo3::prelude::*;
+use numpy::{PyArray2, ToPyArray};
+use pyo3::{prelude::*, types::PyType};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use crate::{
-    cli::Transform,
-    transforms::{
-        annotate, apply_transform, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
-        interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single,
-    },
-    utils::sorted_glob,
+    cli::Transform, signals::DeferedSignal, transforms::{
+        annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage, interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single
+    }, utils::sorted_glob
 };
 
 #[allow(dead_code)]
 #[pyclass]
 #[derive(Debug)]
 pub struct PhotonCube {
+    #[pyo3(get)]
     path: String,
+
+    // Custom getter/setter implemented below
     cfa_mask: Option<Array2<bool>>,
+
+    // Custom getter/setter implemented below
     inpaint_mask: Option<Array2<bool>>,
+
+    #[pyo3(get, set)]
     start: isize,
+
+    #[pyo3(get, set)]
     end: Option<isize>,
+
+    #[pyo3(get, set)]
     step: Option<usize>,
+
+    transforms: Vec<Transform>,
+
     _storage: Mmap,
 }
 type PhotonCubeView<'a> = ArrayView3<'a, u8>;
@@ -112,9 +125,7 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
 // Note: Methods in this `impl` block aren't exposed to python
 impl PhotonCube {
     /// Open a photoncube from a memmapped `.npy` file.
-    /// Note: Loading from a directory of .bin files has been deprecated
-    /// as it is non-trivial to do when using the full-array and requires
-    /// entirely loading the photoncube into memory. Convert to `.npy` first.
+    /// For more see `open_py`, the python analogue to this method.
     pub fn open(path_str: &str) -> Result<Self> {
         let path = Path::new(path_str);
         let ext = path.extension().unwrap().to_ascii_lowercase();
@@ -134,203 +145,28 @@ impl PhotonCube {
             start: 0,
             end: None,
             step: None,
+            transforms: vec![],
             _storage: mmap,
         })
     }
 
-    /// Access the underlying data as a ArrayView3.
-    pub fn view(&self) -> Result<PhotonCubeView, ViewNpyError> {
-        ArrayView3::<u8>::view_npy(&self._storage)
-    }
-
-    /// Set the range of the photoncube, this is used for slicing and frame preview
-    /// where `step` will be the number of frames to average together.
-    pub fn set_range(&mut self, start: isize, end: Option<isize>, step: usize) {
-        self.start = start;
-        self.end = end;
-        self.step = Some(step);
-    }
-
-    /// Total number of bitplanes in cube (independent of `set_range`).
-    pub fn len(&self) -> usize {
-        self.view().expect("Cannot load photoncube").len_of(Axis(0))
-    }
-
-    /// Load either a 2D NPY file or an intensity-only image file as an array of booleans.
-    /// Note: For the image, any pure white pixels are false, all others are true.
-    ///       This is contrary to what you might expect but enables us to load in the
-    ///       colorSPAD's cfa array and have a mask representing the colored pixels.
-    pub fn _try_load_mask(path: &str) -> Result<Array2<bool>> {
-        let path_obj = Path::new(&path);
-        let ext = path_obj.extension().unwrap().to_ascii_lowercase();
-
-        if !path_obj.exists() {
-            // This should probably be a specific IO error?
-            Err(anyhow!("File not found at {}!", path))
-        } else if ext == "npy" || ext == "npz" {
-            let arr: Array2<bool> = read_npy(path)?;
-            Ok(arr)
-        } else {
-            let arr = ImageReader::open(path)?
-                .decode()?
-                .into_luma8()
-                .into_ndarray2()
-                .mapv(|v| v != 0);
-            Ok(arr)
-        }
-    }
-
-    /// Load the color-filter array associated with the photoncube, if applicable.
-    /// Will be used for processing if loaded.
-    pub fn load_cfa(&mut self, path: &str) -> Result<()> {
-        self.cfa_mask = Some(Self::_try_load_mask(path)?);
-        Ok(())
-    }
-
-    /// Load an inpainting mask. This can be called multiple times, the masks will
-    /// simply be ORed together (interpolate where mask is true/white).
-    pub fn load_mask(&mut self, path: &str) -> Result<()> {
-        let mut new_mask = Self::_try_load_mask(path)?;
-
-        if let Some(mask) = &self.inpaint_mask {
-            new_mask = mask.bitor(new_mask);
-        }
-        self.inpaint_mask = Some(new_mask);
-        Ok(())
-    }
-
-    /// Return function to process a single virtual exposure, depends on any masks (cfa/inpaint).
-    pub fn process_single(
-        &self,
-        invert_response: bool,
-        tonemap2srgb: bool,
-        colorspad_fix: bool,
-    ) -> impl Fn(Array2<f32>) -> Result<Array2<f32>> + '_ {
-        move |mut frame| {
-            // Invert SPAD response
-            if invert_response {
-                frame = binary_avg_to_rgb(frame, 1.0, None);
-            }
-
-            // Apply sRGB tonemapping
-            if tonemap2srgb {
-                frame = linearrgb_to_srgb(frame);
-            }
-
-            // Apply any frame-level fixes (only for ColorSPAD at the moment)
-            if colorspad_fix {
-                frame = process_colorspad(frame);
-            }
-
-            // Demosaic frame by interpolating white pixels
-            if let Some(mask) = &self.cfa_mask {
-                frame = interpolate_where_mask(frame, mask, false)?;
-            }
-
-            // Inpaint any hot/dead pixels
-            if let Some(mask) = &self.inpaint_mask {
-                frame = interpolate_where_mask(frame, mask, false)?;
-            }
-            Ok(frame)
-        }
-    }
-
-    /// Save all virtual exposures to a folder.
-    pub fn save_images(
-        &self,
-        img_dir: &str,
-        process_fn: Option<impl Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync>,
-        annotate_frames: bool,
-        transform: &[Transform],
-        message: Option<&str>,
-    ) -> Result<isize> {
-        if self.step.is_none() {
-            return Err(anyhow!(
-                "Step must be set before virtual exposures can be created!"
-            ));
-        }
-
-        // Create virtual exposures iterator over all data
-        let view = self.view()?;
-        let slice = view.slice_axis(Axis(0), Slice::new(self.start, self.end, 1));
-        let virtual_exps = slice.par_virtual_exposures(self.step.unwrap(), true);
-
-        // Conditionally setup a pbar
-        let pbar = if let Some(msg) = message {
-            ProgressBar::new((slice.len_of(Axis(0)) / self.step.unwrap()) as u64)
-                .with_style(ProgressStyle::with_template(
-                    "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
-                )?)
-                .with_message(msg.to_owned())
-        } else {
-            ProgressBar::hidden()
-        };
-
-        // Create parallel iterator over all chunks of frames and process them
-        let num_frames = virtual_exps
-            .enumerate()
-            // Process data, save and count frames, this consumes/runs the iterator to completion
-            // We use a try_fold followed by a try_reduce as a sort of try_map here.
-            .try_fold(
-                || 0,
-                |count, (i, mut frame)| {
-                    // Perform all Array2<f32> -> Array2<f32> preprocessing
-                    if let Some(preprocess) = &process_fn {
-                        frame = preprocess(frame)?;
-                    }
-
-                    // Convert to uint8 in [0, 255] range
-                    let frame = frame.mapv(|x| (x * 255.0) as u8);
-
-                    // Convert to image and rotate/flip as needed
-                    let frame = array2_to_grayimage(frame.to_owned());
-                    let frame = apply_transform(frame, transform);
-                    let mut frame = gray_to_rgbimage(&frame);
-
-                    if annotate_frames {
-                        let start_idx = i * self.step.unwrap() + (self.start as usize);
-                        let text =
-                            format!("{:06}:{:06}", start_idx, start_idx + self.step.unwrap());
-                        annotate(&mut frame, &text, Rgb([252, 186, 3]));
-                    }
-
-                    // Throw error if we cannot save, and stop all processing.
-                    let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
-                    frame.save(&path)?;
-                    pbar.inc(1);
-
-                    Ok::<isize, anyhow::Error>(count + 1)
-                },
-            )
-            .try_reduce(|| 0, |acc, x| Ok(acc + x))?;
-        Ok(num_frames)
-    }
-}
-
-// Note: Methods in this `impl` block are exposed to python
-#[pymethods]
-impl PhotonCube {
-    /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
-    /// in a streaming manner and avoids loading all the data to memory.
-    /// The `.npy` format enables memory mapping the photon cube and is usually faster.
-    /// Note: Function assumes either 256x512 of 512x512 frames that are bitpacked along width dim.
-    #[staticmethod]
-    #[pyo3(text_signature = "(src, dst, is_full_array=False, message=None)")]
+    /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one.
+    /// For more see `convert_to_npy_py`, the python analogue to this method.
     pub fn convert_to_npy(
         src: &str,
         dst: &str,
         is_full_array: bool,
         message: Option<&str>,
-    ) -> PyResult<()> {
+    ) -> Result<()> {
         let path = Path::new(src);
 
         if !path.exists() || !path.is_dir() {
             // This should probably be a specific IO error?
-            Err(anyhow!("Directory of `.bin` files not found at {}!", src).into())
+            Err(anyhow!("Directory of `.bin` files not found at {}!", src))
         } else {
             let paths = sorted_glob(path, "**/*.bin")?;
             if paths.is_empty() {
-                return Err(anyhow!("No .bin files found in {}!", src).into());
+                return Err(anyhow!("No .bin files found in {}!", src));
             }
 
             // Create a (sparse if supported) file of zeroed data.
@@ -408,5 +244,267 @@ impl PhotonCube {
                 })?;
             Ok(())
         }
+    }
+
+    /// Access the underlying data as a ArrayView3.
+    pub fn view(&self) -> Result<PhotonCubeView, ViewNpyError> {
+        ArrayView3::<u8>::view_npy(&self._storage)
+    }
+
+    /// Equivalent to setting `cube.transforms` directly. 
+    /// Method mirrors python API.
+    pub fn set_transforms(&mut self, transforms: Vec<Transform>) {
+        self.transforms = transforms;
+    }
+
+    /// Load either a 2D NPY file or an intensity-only image file as an array of booleans.
+    /// Note: For the image, any pure white pixels are false, all others are true.
+    ///       This is contrary to what you might expect but enables us to load in the
+    ///       colorSPAD's cfa array and have a mask representing the colored pixels.
+    pub fn _try_load_mask(path: &str) -> Result<Array2<bool>> {
+        let path_obj = Path::new(&path);
+        let ext = path_obj.extension().unwrap().to_ascii_lowercase();
+
+        if !path_obj.exists() {
+            // This should probably be a specific IO error?
+            Err(anyhow!("File not found at {}!", path))
+        } else if ext == "npy" || ext == "npz" {
+            let arr: Array2<bool> = read_npy(path)?;
+            Ok(arr)
+        } else {
+            let arr = ImageReader::open(path)?
+                .decode()?
+                .into_luma8()
+                .into_ndarray2()
+                .mapv(|v| v != 0);
+            Ok(arr)
+        }
+    }
+
+    /// Return function to process a single virtual exposure, depends on any masks (cfa/inpaint).
+    pub fn process_single(
+        &self,
+        invert_response: bool,
+        tonemap2srgb: bool,
+        colorspad_fix: bool,
+    ) -> impl Fn(Array2<f32>) -> Result<Array2<f32>> + '_ {
+        move |mut frame| {
+            // Invert SPAD response
+            if invert_response {
+                frame = binary_avg_to_rgb(frame, 1.0, None);
+            }
+
+            // Apply sRGB tonemapping
+            if tonemap2srgb {
+                frame = linearrgb_to_srgb(frame);
+            }
+
+            // Apply any frame-level fixes (only for ColorSPAD at the moment)
+            if colorspad_fix {
+                frame = process_colorspad(frame);
+            }
+
+            // Demosaic frame by interpolating white pixels
+            if let Some(mask) = &self.cfa_mask {
+                frame = interpolate_where_mask(frame, mask, false)?;
+            }
+
+            // Inpaint any hot/dead pixels
+            if let Some(mask) = &self.inpaint_mask {
+                frame = interpolate_where_mask(frame, mask, false)?;
+            }
+            Ok(frame)
+        }
+    }
+
+    /// Save all virtual exposures to a folder.
+    pub fn save_images(
+        &self,
+        img_dir: &str,
+        process_fn: Option<impl Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync>,
+        annotate_frames: bool,
+        message: Option<&str>,
+    ) -> Result<isize> {
+        if self.step.is_none() {
+            return Err(anyhow!(
+                "Step must be set before virtual exposures can be created!"
+            ));
+        }
+
+        // Create virtual exposures iterator over all data
+        let view = self.view()?;
+        let slice = view.slice_axis(Axis(0), Slice::new(self.start, self.end, 1));
+        let virtual_exps = slice.par_virtual_exposures(self.step.unwrap(), true);
+
+        // Conditionally setup a pbar
+        let pbar = if let Some(msg) = message {
+            ProgressBar::new((slice.len_of(Axis(0)) / self.step.unwrap()) as u64)
+                .with_style(ProgressStyle::with_template(
+                    "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+                )?)
+                .with_message(msg.to_owned())
+        } else {
+            ProgressBar::hidden()
+        };
+
+        // Create parallel iterator over all chunks of frames and process them
+        let num_frames = virtual_exps
+            .enumerate()
+            // Process data, save and count frames, this consumes/runs the iterator to completion
+            // We use a try_fold followed by a try_reduce as a sort of try_map here.
+            .try_fold(
+                || 0,
+                |count, (i, mut frame)| {
+                    // Perform all Array2<f32> -> Array2<f32> preprocessing
+                    if let Some(preprocess) = &process_fn {
+                        frame = preprocess(frame)?;
+                    }
+
+                    // Convert to uint8 in [0, 255] range
+                    let frame = frame.mapv(|x| (x * 255.0) as u8);
+
+                    // Convert to image and rotate/flip as needed
+                    let frame = array2_to_grayimage(frame.to_owned());
+                    let frame = apply_transforms(frame, &self.transforms[..]);
+                    let mut frame = gray_to_rgbimage(&frame);
+
+                    if annotate_frames {
+                        let start_idx = i * self.step.unwrap() + (self.start as usize);
+                        let text =
+                            format!("{:06}:{:06}", start_idx, start_idx + self.step.unwrap());
+                        annotate(&mut frame, &text, Rgb([252, 186, 3]));
+                    }
+
+                    // Throw error if we cannot save, and stop all processing.
+                    let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+                    frame.save(&path)?;
+                    pbar.inc(1);
+
+                    Ok::<isize, anyhow::Error>(count + 1)
+                },
+            )
+            .try_reduce(|| 0, |acc, x| Ok(acc + x))?;
+        Ok(num_frames)
+    }
+}
+
+// Note: Methods in this `impl` block are exposed to python
+#[pymethods]
+impl PhotonCube {
+    /// Open a photoncube from a memmapped `.npy` file.
+    /// Note: Loading from a directory of .bin files has been deprecated
+    /// as it is non-trivial to do when using the full-array and requires
+    /// entirely loading the photoncube into memory. Convert to `.npy` first.
+    #[classmethod]
+    #[pyo3(name = "open", text_signature = "(path)")]
+    pub fn open_py(_: &PyType, path: &str) -> Result<Self> {
+        Self::open(path)
+    }
+
+    /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
+    /// in a streaming manner and avoids loading all the data to memory.
+    /// The `.npy` format enables memory mapping the photon cube and is usually faster.
+    /// Note: Function assumes either 256x512 of 512x512 frames that are bitpacked along width dim.
+    #[staticmethod]
+    #[pyo3(name="convert_to_npy", text_signature = "(src, dst, is_full_array=False, message=None)")]
+    pub fn convert_to_npy_py(
+        py: Python,
+        src: &str,
+        dst: &str,
+        is_full_array: bool,
+        message: Option<&str>,
+    ) -> PyResult<()> {
+        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        Self::convert_to_npy(src, dst, is_full_array, message).map_err(|e| e.into())
+    }
+
+    #[getter(inpaint_mask)]
+    pub fn inpaint_mask_getter<'py>(&'py self, py: Python<'py>) -> Result<Option<Py<PyAny>>> {
+        // See: https://github.com/PyO3/rust-numpy/issues/408
+        self.inpaint_mask
+            .as_ref()
+            .map(|a| -> Result<Py<PyAny>> {
+                let py_arr = a.to_pyarray(py).to_owned().into_py(py);
+                py_arr
+                    .getattr(py, "setflags")?
+                    .call1(py, (false, None::<bool>, None::<bool>))?;
+                Ok(py_arr)
+            })
+            .transpose()
+    }
+
+    #[setter(inpaint_mask)]
+    pub fn inpaint_mask_setter(&mut self, arr: Option<&PyArray2<bool>>) -> Result<()> {
+        self.inpaint_mask = arr.map(|a| a.to_owned_array());
+        Ok(())
+    }
+
+    #[getter(cfa_mask)]
+    pub fn cfa_mask_getter<'py>(&'py self, py: Python<'py>) -> Result<Option<Py<PyAny>>> {
+        // See: https://github.com/PyO3/rust-numpy/issues/408
+        self.cfa_mask
+            .as_ref()
+            .map(|a| -> Result<Py<PyAny>> {
+                let py_arr = a.to_pyarray(py).to_owned().into_py(py);
+                py_arr
+                    .getattr(py, "setflags")?
+                    .call1(py, (false, None::<bool>, None::<bool>))?;
+                Ok(py_arr)
+            })
+            .transpose()
+    }
+
+    #[setter(cfa_mask)]
+    pub fn cfa_mask_setter(&mut self, arr: Option<&PyArray2<bool>>) -> Result<()> {
+        self.cfa_mask = arr.map(|a| a.to_owned_array());
+        Ok(())
+    }
+
+    /// Load the color-filter array associated with the photoncube, if applicable.
+    /// Will be used for processing if loaded.
+    #[pyo3(text_signature = "(path)")]
+    pub fn load_cfa(&mut self, path: &str) -> Result<()> {
+        self.cfa_mask = Some(Self::_try_load_mask(path)?);
+        Ok(())
+    }
+
+    /// Load an inpainting mask. This can be called multiple times, the masks will
+    /// simply be ORed together (interpolate where mask is true/white).
+    #[pyo3(text_signature = "(path)")]
+    pub fn load_mask(&mut self, path: &str) -> Result<()> {
+        let mut new_mask = Self::_try_load_mask(path)?;
+
+        if let Some(mask) = &self.inpaint_mask {
+            new_mask = mask.bitor(new_mask);
+        }
+        self.inpaint_mask = Some(new_mask);
+        Ok(())
+    }
+
+    /// Set the range of the photoncube, this is used for slicing and frame preview
+    /// where `step` will be the number of frames to average together.
+    #[pyo3(text_signature = "(start, end=None, step=None)")]
+    pub fn set_range(&mut self, start: isize, end: Option<isize>, step: Option<usize>) {
+        self.start = start;
+        self.end = end;
+        self.step = step;
+    }
+
+    /// Define which transforms to apply to virtual exposures. Tranforms are applied 
+    /// sequentially and can thus be composed (i.e: Rot90+Rot90=Rot180).
+    /// Options are: "Identity", "Rot90", "Rot180", "Rot270", "FlipUD", "FlipLR"
+    #[pyo3(name = "set_transforms", text_signature = "(transforms)")]
+    pub fn set_transforms_py(&mut self, transforms: Vec<&str>) -> Result<()> {
+        let transforms = transforms
+            .iter()
+            .map(|t| Transform::from_str(t))
+            .collect::<Result<Vec<_>, _>>();
+        self.transforms = transforms?;
+        Ok(())
+    }
+
+    /// Total number of bitplanes in cube (independent of `set_range`).
+    pub fn len(&self) -> usize {
+        self.view().expect("Cannot load photoncube").len_of(Axis(0))
     }
 }

@@ -1,3 +1,8 @@
 /target
 /data 
 /frames 
+__pycache__/
+*.png
+*.npy
+.vscode/
+*.mp4
