@@ -311,10 +311,11 @@ impl PhotonCube {
 #[pymethods]
 impl PhotonCube {
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
-    /// in a streaming manner and ovoids loading all the data to memory.
+    /// in a streaming manner and avoids loading all the data to memory.
     /// The `.npy` format enables memory mapping the photon cube and is usually faster.
     /// Note: Function assumes either 256x512 of 512x512 frames that are bitpacked along width dim.
     #[staticmethod]
+    #[pyo3(text_signature = "(src, dst, is_full_array=False, message=None)")]
     pub fn convert_to_npy(
         src: &str,
         dst: &str,
