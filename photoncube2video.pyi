@@ -34,4 +34,14 @@ class PhotonCube:
         annotate_frames=False,
         message=None,
     ) -> int: ...
+    def save_video(
+        output,
+        fps=24,
+        img_dir=None,
+        invert_response=False,
+        tonemap2srgb=False,
+        colorspad_fix=False,
+        annotate_frames=False,
+        message=None,
+    ) -> int: ...
     def __len__(self: Self) -> int: ...

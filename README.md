@@ -56,8 +56,18 @@ pc.save_images(
     tonemap2srgb=False,
     colorspad_fix=False,
     annotate_frames=False,
-    message="Saving Images..."
+    message="Saving Images..."  # If not None, a progress bar will be drawn
 )
+
+# Make video preview instead, but transform frames first
+pc.set_transforms(["Rot90", "FlipUD"])
+pc.save_video(
+    "output.mp4", fps=24, 
+    # If specified, images are also saved
+    img_dir=None,
+    # Options from `save_images` can be used here too:
+    message="Making video..." 
+) 
 ```
 
 ### CLI Usage:

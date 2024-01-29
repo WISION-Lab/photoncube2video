@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{create_dir_all, File, OpenOptions},
     io::Read,
     ops::BitOr,
@@ -17,9 +18,11 @@ use nshare::ToNdarray2;
 use numpy::{PyArray2, ToPyArray};
 use pyo3::{prelude::*, types::PyType};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use tempfile::tempdir;
 
 use crate::{
     cli::Transform,
+    ffmpeg::{ensure_ffmpeg, make_video},
     signals::DeferedSignal,
     transforms::{
         annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
@@ -393,6 +396,40 @@ impl PhotonCube {
             .try_reduce(|| 0, |acc, x| Ok(acc + x))?;
         Ok(num_frames)
     }
+
+    /// Save all virtual exposures as a video (and optionally images).
+    pub fn save_video(
+        &self,
+        output: &str,
+        fps: u64,
+        img_dir: Option<&str>,
+        process_fn: Option<impl Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync>,
+        annotate_frames: bool,
+        message: Option<&str>,
+        metadata: Option<HashMap<&str, &str>>,
+    ) -> Result<isize> {
+        // Get img path or tempdir, ensure it exists.
+        let tmp_dir = tempdir()?;
+        let img_dir = img_dir.unwrap_or(tmp_dir.path().to_str().unwrap());
+        create_dir_all(&img_dir).ok();
+
+        // Generate preview frames
+        let num_frames = self.save_images(&img_dir, process_fn, annotate_frames, message)?;
+
+        // Assemble them into a video
+        ensure_ffmpeg(true);
+        make_video(
+            Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
+            &output,
+            fps,
+            num_frames as u64,
+            message,
+            metadata,
+        );
+
+        tmp_dir.close()?;
+        Ok(num_frames)
+    }
 }
 
 // Note: Methods in this `impl` block are exposed to python
@@ -548,6 +585,43 @@ impl PhotonCube {
             Some(process),
             annotate_frames.unwrap_or(false),
             message,
+        )
+    }
+
+    /// Save all virtual exposures as a video (and optionally images).
+    // Note: Same issue than with `save_images_py`, manual kwargs defaults...
+    // TODO: Use pyo3's signature tuple once py36 dependency is dropped.
+    #[pyo3(
+        name = "save_video",
+        text_signature = "(output, fps=24, img_dir=None, invert_response=False, \
+            tonemap2srgb=False, colorspad_fix=False, annotate_frames=False, message=None)"
+    )]
+    pub fn save_video_py(
+        &self,
+        py: Python,
+        output: &str,
+        fps: Option<u64>,
+        img_dir: Option<&str>,
+        invert_response: Option<bool>,
+        tonemap2srgb: Option<bool>,
+        colorspad_fix: Option<bool>,
+        annotate_frames: Option<bool>,
+        message: Option<&str>,
+    ) -> Result<isize> {
+        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        let process = self.process_single(
+            invert_response.unwrap_or(false),
+            tonemap2srgb.unwrap_or(false),
+            colorspad_fix.unwrap_or(false),
+        );
+        self.save_video(
+            output,
+            fps.unwrap_or(24),
+            img_dir,
+            Some(process),
+            annotate_frames.unwrap_or(false),
+            message,
+            None,
         )
     }
 

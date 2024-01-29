@@ -1,16 +1,11 @@
-use std::{collections::HashMap, convert::From, env, fs::create_dir_all, path::Path};
+use std::{collections::HashMap, convert::From, env};
 
 use anyhow::{anyhow, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pyo3::prelude::*;
 use strum_macros::EnumString;
-use tempfile::tempdir;
 
-use crate::{
-    cube::PhotonCube,
-    ffmpeg::{ensure_ffmpeg, make_video},
-    signals::DeferedSignal,
-};
+use crate::{cube::PhotonCube, signals::DeferedSignal};
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
 // we use `EnumString` to convert strings into their enum values.
@@ -134,43 +129,35 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
     for inpaint_path in args.inpaint_path.iter() {
         cube.load_mask(inpaint_path)?;
     }
-
-    // Get img path or tempdir, ensure it exists.
-    let tmp_dir = tempdir()?;
-    let img_dir = args
-        .img_dir
-        .unwrap_or(tmp_dir.path().to_str().unwrap().to_owned());
-    create_dir_all(&img_dir).ok();
-
-    // Generate preview frames
     cube.set_range(args.start.unwrap_or(0), args.end, Some(args.burst_size));
     cube.set_transforms(args.transform);
     let process = cube.process_single(args.invert_response, args.tonemap2srgb, args.colorspad_fix);
-    let num_frames = cube.save_images(
-        &img_dir,
-        Some(process),
-        args.annotate_frames,
-        Some("Processing Frames..."),
-    )?;
 
-    // Finally, make a call to ffmpeg to assemble to video
-    let cmd = format!(
-        "Created using: '{}'",
-        std::env::args().collect::<Vec<_>>().join(" ")
-    );
-
+    // Generate preview
     if let Some(output) = args.output {
-        ensure_ffmpeg(true);
-        make_video(
-            Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
-            &output,
+        let cmd = format!(
+            "Created using: '{}'",
+            env::args().skip(1).collect::<Vec<_>>().join(" ")
+        );
+
+        cube.save_video(
+            output.as_str(),
             args.fps,
-            num_frames as u64,
+            args.img_dir.as_deref(),
+            Some(process),
+            args.annotate_frames,
             Some("Making video..."),
             Some(HashMap::from([("comment", cmd.as_str())])),
-        );
-    }
-    tmp_dir.close()?;
+        )?;
+    } else {
+        cube.save_images(
+            args.img_dir.unwrap().as_str(),
+            Some(process),
+            args.annotate_frames,
+            Some("Processing Frames..."),
+        )?;
+    };
+
     Ok(())
 }
 

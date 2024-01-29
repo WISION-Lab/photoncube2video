@@ -48,7 +48,7 @@ pub fn make_video(
             }
             s
         })
-        .unwrap_or(vec!["".to_string()]);
+        .unwrap_or(vec![]);
 
     let cmd = format!(
         // Scale to a max width of 1280 pixels as long as the height is divisible by 2
