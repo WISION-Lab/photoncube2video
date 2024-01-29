@@ -1,9 +1,9 @@
 pub mod cli;
 pub mod cube;
 pub mod ffmpeg;
+pub mod signals;
 pub mod transforms;
 pub mod utils;
-pub mod signals;
 
 use pyo3::prelude::*;
 

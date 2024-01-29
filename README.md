@@ -47,6 +47,17 @@ print(pc.inpaint_mask)
 # If using colorspad, you can specify the color filter array 
 # and all non-white pixels will be interpolated out
 pc.load_cfa("cfa.png")
+
+# Generate 100 preview images with bit-depth of 256 
+pc.set_range(0, 25600, 256)
+pc.save_images(
+    "tmp/", 
+    invert_response=False,
+    tonemap2srgb=False,
+    colorspad_fix=False,
+    annotate_frames=False,
+    message="Saving Images..."
+)
 ```
 
 ### CLI Usage:
@@ -101,7 +112,7 @@ By default this assumes half array frames (i.e: 256x512), you can specify `--ful
 
 ### Development
 
-We use [maturin](https://www.maturin.rs/) as a build system, which enables this package to be built as a python extension using [pyo3](https://pyo3.rs) bindings.
+We use [maturin](https://www.maturin.rs/) as a build system, which enables this package to be built as a python extension using [pyo3](https://pyo3.rs) bindings. Some other tools are needed for development work, which can be installed using `pip install -v .[dev]`.
 
 #### Code Quality
 
@@ -109,6 +120,9 @@ We use `rustfmt` to format the codebase, we use some customizations (i.e for imp
 ```
 cargo +nightly fmt 
 ```
+
+Similarly we use `black` to format the python parts of the project. 
+
 
 To keep the project lean, it's recommended to check for unused dependencies [using this tool](https://github.com/est31/cargo-udeps), like so: 
 

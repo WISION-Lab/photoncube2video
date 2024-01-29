@@ -1,5 +1,5 @@
 use std::{
-    fs::{File, OpenOptions},
+    fs::{create_dir_all, File, OpenOptions},
     io::Read,
     ops::BitOr,
     path::Path,
@@ -19,9 +19,13 @@ use pyo3::{prelude::*, types::PyType};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 
 use crate::{
-    cli::Transform, signals::DeferedSignal, transforms::{
-        annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage, interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single
-    }, utils::sorted_glob
+    cli::Transform,
+    signals::DeferedSignal,
+    transforms::{
+        annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
+        interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single,
+    },
+    utils::sorted_glob,
 };
 
 #[allow(dead_code)]
@@ -251,7 +255,7 @@ impl PhotonCube {
         ArrayView3::<u8>::view_npy(&self._storage)
     }
 
-    /// Equivalent to setting `cube.transforms` directly. 
+    /// Equivalent to setting `cube.transforms` directly.
     /// Method mirrors python API.
     pub fn set_transforms(&mut self, transforms: Vec<Transform>) {
         self.transforms = transforms;
@@ -325,11 +329,14 @@ impl PhotonCube {
         annotate_frames: bool,
         message: Option<&str>,
     ) -> Result<isize> {
+        // Do some quick validation
+        let img_dir_path = Path::new(&img_dir);
         if self.step.is_none() {
             return Err(anyhow!(
                 "Step must be set before virtual exposures can be created!"
             ));
         }
+        create_dir_all(&img_dir).ok();
 
         // Create virtual exposures iterator over all data
         let view = self.view()?;
@@ -376,7 +383,7 @@ impl PhotonCube {
                     }
 
                     // Throw error if we cannot save, and stop all processing.
-                    let path = Path::new(&img_dir).join(format!("frame{:06}.png", i));
+                    let path = img_dir_path.join(format!("frame{:06}.png", i));
                     frame.save(&path)?;
                     pbar.inc(1);
 
@@ -406,7 +413,10 @@ impl PhotonCube {
     /// The `.npy` format enables memory mapping the photon cube and is usually faster.
     /// Note: Function assumes either 256x512 of 512x512 frames that are bitpacked along width dim.
     #[staticmethod]
-    #[pyo3(name="convert_to_npy", text_signature = "(src, dst, is_full_array=False, message=None)")]
+    #[pyo3(
+        name = "convert_to_npy",
+        text_signature = "(src, dst, is_full_array=False, message=None)"
+    )]
     pub fn convert_to_npy_py(
         py: Python,
         src: &str,
@@ -490,7 +500,7 @@ impl PhotonCube {
         self.step = step;
     }
 
-    /// Define which transforms to apply to virtual exposures. Tranforms are applied 
+    /// Define which transforms to apply to virtual exposures. Tranforms are applied
     /// sequentially and can thus be composed (i.e: Rot90+Rot90=Rot180).
     /// Options are: "Identity", "Rot90", "Rot180", "Rot270", "FlipUD", "FlipLR"
     #[pyo3(name = "set_transforms", text_signature = "(transforms)")]
@@ -499,8 +509,46 @@ impl PhotonCube {
             .iter()
             .map(|t| Transform::from_str(t))
             .collect::<Result<Vec<_>, _>>();
-        self.transforms = transforms?;
+        self.transforms = transforms.map_err(|_| {
+            anyhow!(
+                "Invalid transforms encountered. Expected one or more of \
+            'Identity', 'Rot90', 'Rot180', 'Rot270', 'FlipUD', 'FlipLR'."
+            )
+        })?;
         Ok(())
+    }
+
+    /// Save all virtual exposures to a folder.
+    // Note: We're stuck using an old pyo3 version so to emulate kwargs with defaults
+    //       we force all kwargs be Option<T> and unwrap_or them later with a default.
+    // TODO: Use pyo3's signature tuple once py36 dependency is dropped.
+    #[pyo3(
+        name = "save_images",
+        text_signature = "(img_dir, invert_response=False, tonemap2srgb=False, \
+            colorspad_fix=False, annotate_frames=False, message=None)"
+    )]
+    pub fn save_images_py(
+        &self,
+        py: Python,
+        img_dir: &str,
+        invert_response: Option<bool>,
+        tonemap2srgb: Option<bool>,
+        colorspad_fix: Option<bool>,
+        annotate_frames: Option<bool>,
+        message: Option<&str>,
+    ) -> Result<isize> {
+        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        let process = self.process_single(
+            invert_response.unwrap_or(false),
+            tonemap2srgb.unwrap_or(false),
+            colorspad_fix.unwrap_or(false),
+        );
+        self.save_images(
+            &img_dir,
+            Some(process),
+            annotate_frames.unwrap_or(false),
+            message,
+        )
     }
 
     /// Total number of bitplanes in cube (independent of `set_range`).

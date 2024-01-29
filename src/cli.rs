@@ -7,11 +7,13 @@ use strum_macros::EnumString;
 use tempfile::tempdir;
 
 use crate::{
-    cube::PhotonCube, ffmpeg::{ensure_ffmpeg, make_video}, signals::DeferedSignal
+    cube::PhotonCube,
+    ffmpeg::{ensure_ffmpeg, make_video},
+    signals::DeferedSignal,
 };
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
-// we use `EnumString` to convert strings into their enum values. 
+// we use `EnumString` to convert strings into their enum values.
 // TODO: Use pyclass and remove strum dependency when we drop py36 support.
 #[derive(ValueEnum, Clone, Copy, Debug, EnumString)]
 pub enum Transform {
