@@ -134,8 +134,9 @@ cargo +nightly fmt
 Similarly we use `black` to format the python parts of the project. 
 
 
-To keep the project lean, it's recommended to check for unused dependencies [using this tool](https://github.com/est31/cargo-udeps), like so: 
+To keep the project lean, it's recommended to check for unused dependencies [using this tool](https://github.com/est31/cargo-udeps), or [this one](https://github.com/bnjbvr/cargo-machete), like so: 
 
 ```
 cargo +nightly udeps
+cargo machete --with-metadata
 ```

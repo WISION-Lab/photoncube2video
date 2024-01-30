@@ -1,24 +1,11 @@
 use std::{collections::HashMap, convert::From, env};
 
-use anyhow::{anyhow, Result};
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use anyhow::Result;
+use clap::{Args, Parser, Subcommand};
 use pyo3::prelude::*;
-use strum_macros::EnumString;
 
-use crate::{cube::PhotonCube, signals::DeferedSignal};
+use crate::{cube::PhotonCube, signals::DeferedSignal, transforms::Transform};
 
-// Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
-// we use `EnumString` to convert strings into their enum values.
-// TODO: Use pyclass and remove strum dependency when we drop py36 support.
-#[derive(ValueEnum, Clone, Copy, Debug, EnumString)]
-pub enum Transform {
-    Identity,
-    Rot90,
-    Rot180,
-    Rot270,
-    FlipUD,
-    FlipLR,
-}
 
 /// Convert a photon cube (npy file/directory of bin files) between formats or to
 /// a video preview (mp4) by naively averaging frames.
@@ -53,12 +40,10 @@ pub struct ConvertArgs {
     pub full_array: bool,
 }
 
+// Ensures that at least one of these two is set.
 #[derive(Debug, Args)]
-pub struct PreviewArgs {
-    /// Path to photon cube (.npy file expected)
-    #[arg(short, long)]
-    pub input: String,
-
+#[group(required = true, multiple = true)]
+pub struct OutputGroup {
     /// Path of output video
     #[arg(short, long)]
     pub output: Option<String>,
@@ -66,6 +51,16 @@ pub struct PreviewArgs {
     /// Output directory to save PNGs in
     #[arg(short = 'd', long)]
     pub img_dir: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PreviewArgs {
+    /// Path to photon cube (.npy file expected)
+    #[arg(short, long)]
+    pub input: String,
+
+    #[clap(flatten)]
+    outputs: OutputGroup,
 
     /// Path of color filter array to use for demosaicing
     #[arg(long, default_value = None)]
@@ -113,14 +108,6 @@ pub struct PreviewArgs {
 }
 
 pub fn preview(args: PreviewArgs) -> Result<()> {
-    // Ensure the user set at least one output
-    // TODO: Clap can do this no?
-    if args.output.is_none() && args.img_dir.is_none() {
-        return Err(anyhow!(
-            "At least one output needs to be specified. Please either set --output or --img-dir (or both)."
-        ));
-    }
-
     // Load all the neccesary files
     let mut cube = PhotonCube::open(&args.input)?;
     if let Some(cfa_path) = args.cfa_path {
@@ -134,7 +121,7 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
     let process = cube.process_single(args.invert_response, args.tonemap2srgb, args.colorspad_fix);
 
     // Generate preview
-    if let Some(output) = args.output {
+    if let Some(output) = args.outputs.output {
         let cmd = format!(
             "Created using: '{}'",
             env::args().skip(1).collect::<Vec<_>>().join(" ")
@@ -143,7 +130,7 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
         cube.save_video(
             output.as_str(),
             args.fps,
-            args.img_dir.as_deref(),
+            args.outputs.img_dir.as_deref(),
             Some(process),
             args.annotate_frames,
             Some("Making video..."),
@@ -151,7 +138,7 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
         )?;
     } else {
         cube.save_images(
-            args.img_dir.unwrap().as_str(),
+            args.outputs.img_dir.unwrap().as_str(),
             Some(process),
             args.annotate_frames,
             Some("Processing Frames..."),

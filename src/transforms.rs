@@ -14,18 +14,29 @@ use noisy_float::types::n64;
 use rand::Rng;
 use rusttype::{Font, Scale};
 
-use crate::cli::Transform;
+use clap::ValueEnum;
+use strum_macros::EnumString;
+
+// Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
+// we use `EnumString` to convert strings into their enum values.
+// TODO: Use pyclass and remove strum dependency when we drop py36 support.
+#[derive(ValueEnum, Clone, Copy, Debug, EnumString)]
+pub enum Transform {
+    Identity,
+    Rot90,
+    Rot180,
+    Rot270,
+    FlipUD,
+    FlipLR,
+}
 
 pub fn unpack_single<T>(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Result<Array2<T>>
 where
     T: From<u8> + Copy + num_traits::Zero + 'static,
 {
-    // This pattern is cluncky, is there an easier one that's as readable as unpacking?
-    let [h_orig, w_orig, ..] = bitplane.shape() else {
-        return Err(anyhow!("Malformed bitplane encountered."));
-    };
-    let h = if axis == 0 { h_orig * 8 } else { *h_orig };
-    let w = if axis == 1 { w_orig * 8 } else { *w_orig };
+    let (h_orig, w_orig) = bitplane.dim();
+    let h = if axis == 0 { h_orig * 8 } else { h_orig };
+    let w = if axis == 1 { w_orig * 8 } else { w_orig };
 
     // Allocate full sized frame
     let mut unpacked_bitplane = Array2::<T>::zeros((h, w));

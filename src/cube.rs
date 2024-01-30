@@ -21,17 +21,15 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterato
 use tempfile::tempdir;
 
 use crate::{
-    cli::Transform,
     ffmpeg::{ensure_ffmpeg, make_video},
     signals::DeferedSignal,
     transforms::{
         annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
-        interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single,
+        interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single, Transform
     },
     utils::sorted_glob,
 };
 
-#[allow(dead_code)]
 #[pyclass]
 #[derive(Debug)]
 pub struct PhotonCube {
@@ -57,9 +55,9 @@ pub struct PhotonCube {
 
     _storage: Mmap,
 }
-type PhotonCubeView<'a> = ArrayView3<'a, u8>;
+pub type PhotonCubeView<'a> = ArrayView3<'a, u8>;
 
-trait VirtualExposure {
+pub trait VirtualExposure {
     /// Create parallel iterator over all virtual exposures (bitplane averages of depth `step`)
     fn par_virtual_exposures(
         &self,
@@ -196,7 +194,6 @@ impl PhotonCube {
                 ArrayViewMut3::<u8>::view_mut_npy(&mut mmap).map_err(|e| anyhow!(e))?;
 
             // Modify the array, and write data to it in a streaming manner.
-            // TODO: Make this parallel? Not sure any speedup is possible...
             let pbar = if let Some(msg) = message {
                 ProgressBar::new(paths.len() as u64)
                     .with_style(ProgressStyle::with_template(
