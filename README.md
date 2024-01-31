@@ -15,7 +15,7 @@ To compile it locally, simply clone the repository, `cd` into it and run:
 ```
 pip install -v . 
 ```
-Ensure you have an up-to-date pip, else this might fail. This should work for python >= 3.6.
+Ensure you have an up-to-date pip, and an adequate rust toolchain installed ([install from here](https://rustup.rs/)), else this might fail. This should work for python >= 3.6.
 
 
 This should pull in any rust dependencies and compile bindings that are compatible with your machine's env. It will create both a CLI and package.  
