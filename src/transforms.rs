@@ -11,8 +11,8 @@ use imageproc::{
 use ndarray::{s, Array, Array2, Array3, ArrayView2, ArrayView3, Axis, Slice};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
-use rand::Rng;
 use rusttype::{Font, Scale};
+use fastrand;
 
 use clap::ValueEnum;
 use strum_macros::EnumString;
@@ -73,6 +73,21 @@ where
     T: image::Primitive,
 {
     Array2::from_shape_vec((im.height() as usize, im.width() as usize), im.into_raw()).unwrap()
+}
+
+// Alternative to `nshare::RefNdarray2` which returns HW array
+pub fn ref_grayimage_to_array2<T>(im: &ImageBuffer<Luma<T>, Vec<T>>) -> ArrayView2<T>
+where
+    T: image::Primitive,
+{
+    ArrayView2::from_shape(
+        (
+            im.height() as usize,
+            im.width() as usize
+        ),
+        im,
+    )
+    .unwrap()
 }
 
 // Given an NDarray of HxWxC, convert it to an RGBImage (C must equal 3)
@@ -225,7 +240,7 @@ where
 // Note: The use of generics here is heavy handed, we only really want this function
 //       to work with T=u8 or maybe T=f32/i32. Is there a better way? I.e generic over primitives?
 pub fn interpolate_where_mask<T>(
-    frame: Array2<T>,
+    frame: &Array2<T>,
     mask: &Array2<bool>,
     dither: bool,
 ) -> Result<Array2<T>>
@@ -243,7 +258,6 @@ where
         ));
     }
 
-    let mut rng = rand::thread_rng();
     Ok(Array2::from_shape_fn((h, w), |(i, j)| {
         if mask[(i, j)] {
             let mut counter: f32 = 0.0;
@@ -263,11 +277,7 @@ where
             }
 
             let value = if dither {
-                if rng.gen_range(0.0..1.0) < (value / counter) {
-                    1.0
-                } else {
-                    0.0
-                }
+                (fastrand::f32() < (value / counter)) as u32 as f32
             } else {
                 value / counter
             };

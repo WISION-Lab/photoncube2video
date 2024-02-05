@@ -29,7 +29,6 @@ ndarray-stats = "0.5.1"
 noisy_float = "0.2.0"
 nshare = "0.9.0"
 num-traits = "0.2.17"
-rand = "0.8.5"
 rayon = "1.8.1"
 rusttype = "0.9.3"
 tempfile = "3.9.0"
@@ -40,10 +39,30 @@ pyo3 = { version = "0.15.2", features = ["extension-module", "anyhow", "abi3-py3
 numpy = "0.15.1"
 strum_macros = "0.26.1"
 strum = { version = "0.26.1", features = ["derive"] }
+paste = "1.0.14"
+fastrand = "2.0.1"
 
 [package.metadata.cargo-machete]
 ignored = ["strum"]
 
 [profile.release]
 lto = true
+
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+pprof = { version = "0.13", features = ["flamegraph", "criterion"] }
+
+
+[profile.release-with-debug]
+inherits = "release"
+debug-assertions = true
+
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+
+[[bench]]
+name = "benchmarks"
+harness = false
 

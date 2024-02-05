@@ -21,37 +21,34 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterato
 use tempfile::tempdir;
 
 use crate::{
-    ffmpeg::{ensure_ffmpeg, make_video},
-    signals::DeferedSignal,
-    transforms::{
+    ffmpeg::{ensure_ffmpeg, make_video}, signals::DeferedSignal, transforms::{
         annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
         interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single, Transform
-    },
-    utils::sorted_glob,
+    }, utils::sorted_glob
 };
 
 #[pyclass]
 #[derive(Debug)]
 pub struct PhotonCube {
     #[pyo3(get)]
-    path: String,
+    pub path: String,
 
     // Custom getter/setter implemented below
-    cfa_mask: Option<Array2<bool>>,
+    pub cfa_mask: Option<Array2<bool>>,
 
     // Custom getter/setter implemented below
-    inpaint_mask: Option<Array2<bool>>,
+    pub inpaint_mask: Option<Array2<bool>>,
 
     #[pyo3(get, set)]
-    start: isize,
+    pub start: isize,
 
     #[pyo3(get, set)]
-    end: Option<isize>,
+    pub end: Option<isize>,
 
     #[pyo3(get, set)]
-    step: Option<usize>,
+    pub step: Option<usize>,
 
-    transforms: Vec<Transform>,
+    pub transforms: Vec<Transform>,
 
     _storage: Mmap,
 }
@@ -310,12 +307,12 @@ impl PhotonCube {
 
             // Demosaic frame by interpolating white pixels
             if let Some(mask) = &self.cfa_mask {
-                frame = interpolate_where_mask(frame, mask, false)?;
+                frame = interpolate_where_mask(&frame, mask, false)?;
             }
 
             // Inpaint any hot/dead pixels
             if let Some(mask) = &self.inpaint_mask {
-                frame = interpolate_where_mask(frame, mask, false)?;
+                frame = interpolate_where_mask(&frame, mask, false)?;
             }
             Ok(frame)
         }
