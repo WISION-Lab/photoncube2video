@@ -6,7 +6,6 @@ use pyo3::prelude::*;
 
 use crate::{cube::PhotonCube, signals::DeferedSignal, transforms::Transform};
 
-
 /// Convert a photon cube (npy file/directory of bin files) between formats or to
 /// a video preview (mp4) by naively averaging frames.
 #[derive(Parser)]
@@ -53,6 +52,19 @@ pub struct OutputGroup {
     pub img_dir: Option<String>,
 }
 
+// Ensures that at most one of these two is set.
+#[derive(Debug, Args)]
+#[group(required = false, multiple = false)]
+pub struct FixGroup {
+    /// If enabled, swap columns that are out of order and crop to 254x496
+    #[arg(long, action)]
+    pub colorspad_fix: bool,
+
+    /// If enabled, insert missing row between array halves and crop to 509x496
+    #[arg(long, action)]
+    pub grayspad_fix: bool,
+}
+
 #[derive(Debug, Args)]
 pub struct PreviewArgs {
     /// Path to photon cube (.npy file expected)
@@ -60,7 +72,7 @@ pub struct PreviewArgs {
     pub input: String,
 
     #[clap(flatten)]
-    outputs: OutputGroup,
+    pub outputs: OutputGroup,
 
     /// Path of color filter array to use for demosaicing
     #[arg(long, default_value = None)]
@@ -86,9 +98,8 @@ pub struct PreviewArgs {
     #[arg(short, long, action)]
     pub annotate_frames: bool,
 
-    /// If enabled, swap columns that are out of order and crop to 254x496
-    #[arg(long, action)]
-    pub colorspad_fix: bool,
+    #[clap(flatten)]
+    pub fix: FixGroup,
 
     /// Index of binary frame at which to start the preview from (inclusive)
     #[arg(short, long, default_value = None)]
@@ -118,7 +129,12 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
     }
     cube.set_range(args.start.unwrap_or(0), args.end, Some(args.burst_size));
     cube.set_transforms(args.transform);
-    let process = cube.process_single(args.invert_response, args.tonemap2srgb, args.colorspad_fix);
+    let process = cube.process_single(
+        args.invert_response,
+        args.tonemap2srgb,
+        args.fix.colorspad_fix,
+        args.fix.grayspad_fix,
+    )?;
 
     // Generate preview
     if let Some(output) = args.outputs.output {

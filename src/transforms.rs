@@ -1,20 +1,19 @@
 use std::convert::{From, Into};
 
 use anyhow::{anyhow, Result};
+use clap::ValueEnum;
 use conv::ValueFrom;
+use fastrand;
 use image::{imageops, GrayImage, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::{
     definitions::{Clamp, Image},
     drawing::{draw_text_mut, text_size},
     map::map_pixels,
 };
-use ndarray::{s, Array, Array2, Array3, ArrayView2, ArrayView3, Axis, Slice};
+use ndarray::{concatenate, s, Array, Array2, Array3, ArrayView2, ArrayView3, Axis, Slice};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
 use rusttype::{Font, Scale};
-use fastrand;
-
-use clap::ValueEnum;
 use strum_macros::EnumString;
 
 // Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
@@ -80,14 +79,7 @@ pub fn ref_grayimage_to_array2<T>(im: &ImageBuffer<Luma<T>, Vec<T>>) -> ArrayVie
 where
     T: image::Primitive,
 {
-    ArrayView2::from_shape(
-        (
-            im.height() as usize,
-            im.width() as usize
-        ),
-        im,
-    )
-    .unwrap()
+    ArrayView2::from_shape((im.height() as usize, im.width() as usize), im).unwrap()
 }
 
 // Given an NDarray of HxWxC, convert it to an RGBImage (C must equal 3)
@@ -220,10 +212,16 @@ pub fn binary_avg_to_rgb(
     frame
 }
 
+// Note: This does not yet support full array, only TOP half.
 pub fn process_colorspad<T>(mut frame: Array2<T>) -> Array2<T>
 where
     T: Clone,
 {
+    let (h, _) = frame.dim();
+    if h > 256 {
+        unimplemented!("Full array processing not yet supported in `process_colorspad`.")
+    }
+
     // Crop dead regions around edges
     let mut crop = frame.slice_mut(s![2.., ..496]);
 
@@ -235,6 +233,28 @@ where
 
     // This clones the array, can we avoid this somehow??
     crop.to_owned()
+}
+
+/// Process raw grayspad frame, either 256x512 (top) or 512x512 is expected.
+/// In both cases, the leftmost side is cropped.
+pub fn process_grayspad<T>(frame: Array2<T>) -> Array2<T>
+where
+    T: Clone + num_traits::Zero,
+{
+    let (h, _) = frame.dim();
+
+    if h == 512 {
+        let top = frame.slice(s![..256, ..]);
+        let btm = frame.slice(s![256.., ..]);
+        let frame = concatenate(Axis(0), &[top, Array2::zeros((1, 512)).view(), btm]).unwrap();
+        frame.slice(s![2..-2, ..496]).to_owned()
+    } else if h == 256 {
+        todo!()
+    } else {
+        unimplemented!(
+            "A frame of ither 256x512 (top) or 512x512 is expected for `process_grayspad`."
+        )
+    }
 }
 
 // Note: The use of generics here is heavy handed, we only really want this function
@@ -264,13 +284,13 @@ where
             let mut value: f32 = 0.0;
 
             for ki in [(i as isize) - 1, (i as isize) + 1] {
-                if (ki >= 0) && (ki < h as isize) {
+                if (ki >= 0) && (ki < h as isize) && !mask[(ki as usize, j)] {
                     counter += 1.0;
                     value += T::into(frame[(ki as usize, j)]);
                 }
             }
             for kj in [(j as isize) - 1, (j as isize) + 1] {
-                if (kj >= 0) && (kj < w as isize) {
+                if (kj >= 0) && (kj < w as isize) && !mask[(i, kj as usize)] {
                     counter += 1.0;
                     value += T::into(frame[(i, kj as usize)]);
                 }

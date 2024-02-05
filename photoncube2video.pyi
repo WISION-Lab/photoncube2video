@@ -31,6 +31,7 @@ class PhotonCube:
         invert_response=False,
         tonemap2srgb=False,
         colorspad_fix=False,
+        grayspad_fix=False,
         annotate_frames=False,
         message=None,
     ) -> int: ...
@@ -41,6 +42,7 @@ class PhotonCube:
         invert_response=False,
         tonemap2srgb=False,
         colorspad_fix=False,
+        grayspad_fix=False,
         annotate_frames=False,
         message=None,
     ) -> int: ...

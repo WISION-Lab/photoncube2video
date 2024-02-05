@@ -21,10 +21,14 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterato
 use tempfile::tempdir;
 
 use crate::{
-    ffmpeg::{ensure_ffmpeg, make_video}, signals::DeferedSignal, transforms::{
+    ffmpeg::{ensure_ffmpeg, make_video},
+    signals::DeferedSignal,
+    transforms::{
         annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
-        interpolate_where_mask, linearrgb_to_srgb, process_colorspad, unpack_single, Transform
-    }, utils::sorted_glob
+        interpolate_where_mask, linearrgb_to_srgb, process_colorspad, process_grayspad,
+        unpack_single, Transform,
+    },
+    utils::sorted_glob,
 };
 
 #[pyclass]
@@ -288,8 +292,14 @@ impl PhotonCube {
         invert_response: bool,
         tonemap2srgb: bool,
         colorspad_fix: bool,
-    ) -> impl Fn(Array2<f32>) -> Result<Array2<f32>> + '_ {
-        move |mut frame| {
+        grayspad_fix: bool,
+    ) -> Result<impl Fn(Array2<f32>) -> Result<Array2<f32>> + '_> {
+        if colorspad_fix && grayspad_fix {
+            return Err(anyhow!(
+                "Cannot use both `colorspad_fix` and `grayspad_fix`."
+            ));
+        };
+        Ok(move |mut frame| {
             // Invert SPAD response
             if invert_response {
                 frame = binary_avg_to_rgb(frame, 1.0, None);
@@ -300,9 +310,12 @@ impl PhotonCube {
                 frame = linearrgb_to_srgb(frame);
             }
 
-            // Apply any frame-level fixes (only for ColorSPAD at the moment)
+            // Apply any frame-level fixes
             if colorspad_fix {
                 frame = process_colorspad(frame);
+            }
+            if grayspad_fix {
+                frame = process_grayspad(frame);
             }
 
             // Demosaic frame by interpolating white pixels
@@ -315,7 +328,7 @@ impl PhotonCube {
                 frame = interpolate_where_mask(&frame, mask, false)?;
             }
             Ok(frame)
-        }
+        })
     }
 
     /// Save all virtual exposures to a folder.
@@ -556,7 +569,7 @@ impl PhotonCube {
     #[pyo3(
         name = "save_images",
         text_signature = "(img_dir, invert_response=False, tonemap2srgb=False, \
-            colorspad_fix=False, annotate_frames=False, message=None)"
+            colorspad_fix=False, grayspad_fix=False, annotate_frames=False, message=None)"
     )]
     pub fn save_images_py(
         &self,
@@ -565,6 +578,7 @@ impl PhotonCube {
         invert_response: Option<bool>,
         tonemap2srgb: Option<bool>,
         colorspad_fix: Option<bool>,
+        grayspad_fix: Option<bool>,
         annotate_frames: Option<bool>,
         message: Option<&str>,
     ) -> Result<isize> {
@@ -573,7 +587,8 @@ impl PhotonCube {
             invert_response.unwrap_or(false),
             tonemap2srgb.unwrap_or(false),
             colorspad_fix.unwrap_or(false),
-        );
+            grayspad_fix.unwrap_or(false),
+        )?;
         self.save_images(
             &img_dir,
             Some(process),
@@ -587,8 +602,8 @@ impl PhotonCube {
     // TODO: Use pyo3's signature tuple once py36 dependency is dropped.
     #[pyo3(
         name = "save_video",
-        text_signature = "(output, fps=24, img_dir=None, invert_response=False, \
-            tonemap2srgb=False, colorspad_fix=False, annotate_frames=False, message=None)"
+        text_signature = "(output, fps=24, img_dir=None, invert_response=False, tonemap2srgb=False, \
+            colorspad_fix=False, grayspad_fix=False, annotate_frames=False, message=None)"
     )]
     pub fn save_video_py(
         &self,
@@ -599,6 +614,7 @@ impl PhotonCube {
         invert_response: Option<bool>,
         tonemap2srgb: Option<bool>,
         colorspad_fix: Option<bool>,
+        grayspad_fix: Option<bool>,
         annotate_frames: Option<bool>,
         message: Option<&str>,
     ) -> Result<isize> {
@@ -607,7 +623,8 @@ impl PhotonCube {
             invert_response.unwrap_or(false),
             tonemap2srgb.unwrap_or(false),
             colorspad_fix.unwrap_or(false),
-        );
+            grayspad_fix.unwrap_or(false),
+        )?;
         self.save_video(
             output,
             fps.unwrap_or(24),

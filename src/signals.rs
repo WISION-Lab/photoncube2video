@@ -22,19 +22,19 @@ impl<'py> DeferedSignal<'py> {
     /// Set SIGINT to defer default action sucj that rust can intercep it.
     /// Perform all error handling preemptively here and store refs in struct.
     pub fn new(py: Python<'py>, signal_name: &str) -> Result<Self> {
-        // Note: We cannot defer signals if not in Python's main thread, so if we 
+        // Note: We cannot defer signals if not in Python's main thread, so if we
         //       detect we aren't we effectively NO-OP.
         let threading_mod = py.import("threading")?;
         let current_thread = threading_mod.call_method("current_thread", (), None)?;
         let main_thread = threading_mod.call_method("main_thread", (), None)?;
-        let is_main_thread = current_thread.as_ptr() == main_thread.as_ptr();  // Equiv to `is` but backwards compat.
+        let is_main_thread = current_thread.as_ptr() == main_thread.as_ptr(); // Equiv to `is` but backwards compat.
 
         if is_main_thread {
             let signal_mod = py.import("signal")?;
             let signal = signal_mod.getattr(signal_name)?;
             let default_handler = signal_mod.getattr("getsignal")?.call1((signal,))?;
             let set_sig = signal_mod.getattr("signal")?;
-    
+
             set_sig
                 .call1((signal, signal_mod.getattr("SIG_DFL")?))
                 .map(|_| ())?;
@@ -61,7 +61,8 @@ impl<'py> Drop for DeferedSignal<'py> {
     /// Restore default SIGINT handler when object goes out of scope.
     fn drop(&mut self) {
         if self.is_main_thread {
-            self.set_sig.unwrap()
+            self.set_sig
+                .unwrap()
                 .call1((self.signal.unwrap(), self.default_handler.unwrap()))
                 .map(|_| ())
                 .expect("Unable to restore default SIGINT handler.");
@@ -71,6 +72,10 @@ impl<'py> Drop for DeferedSignal<'py> {
 
 impl<'py> std::fmt::Display for DeferedSignal<'py> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "DeferedSignal({}, is_main_thread: {})", self.signal_name, self.is_main_thread)
+        write!(
+            f,
+            "DeferedSignal({}, is_main_thread: {})",
+            self.signal_name, self.is_main_thread
+        )
     }
 }
