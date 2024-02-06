@@ -22,6 +22,9 @@ pub enum Commands {
 
     /// Extract and preview virtual exposures from a photoncube.
     Preview(PreviewArgs),
+
+    /// Apply corrections directly to every bitplane and save results as new .npy file.
+    Process(ProcessArgs),
 }
 
 #[derive(Debug, Args)]
@@ -53,7 +56,7 @@ pub struct OutputGroup {
 }
 
 // Ensures that at most one of these two is set.
-#[derive(Debug, Args)]
+#[derive(Debug, Args, Clone, Copy)]
 #[group(required = false, multiple = false)]
 pub struct FixGroup {
     /// If enabled, swap columns that are out of order and crop to 254x496
@@ -65,14 +68,11 @@ pub struct FixGroup {
     pub grayspad_fix: bool,
 }
 
-#[derive(Debug, Args)]
-pub struct PreviewArgs {
+#[derive(Debug, Args, Clone)]
+pub struct PreviewProcessCommonArgs {
     /// Path to photon cube (.npy file expected)
     #[arg(short, long)]
     pub input: String,
-
-    #[clap(flatten)]
-    pub outputs: OutputGroup,
 
     /// Path of color filter array to use for demosaicing
     #[arg(long, default_value = None)]
@@ -82,21 +82,9 @@ pub struct PreviewArgs {
     #[arg(long, num_args(0..))]
     pub inpaint_path: Vec<String>,
 
-    /// Number of frames to average together
-    #[arg(short, long, default_value_t = 256)]
-    pub burst_size: usize,
-
-    /// Frame rate of resulting video
-    #[arg(long, default_value_t = 25)]
-    pub fps: u64,
-
     /// Apply transformations to each frame (these can be composed)
     #[arg(short, long, value_enum, num_args(0..))]
     pub transform: Vec<Transform>,
-
-    /// If enabled, add bitplane indices to images
-    #[arg(short, long, action)]
-    pub annotate_frames: bool,
 
     #[clap(flatten)]
     pub fix: FixGroup,
@@ -108,6 +96,27 @@ pub struct PreviewArgs {
     /// Index of binary frame at which to end the preview at (exclusive)
     #[arg(short, long, default_value = None)]
     pub end: Option<isize>,
+}
+
+#[derive(Debug, Args)]
+pub struct PreviewArgs {
+    #[clap(flatten)]
+    pub common: PreviewProcessCommonArgs,
+
+    #[clap(flatten)]
+    pub outputs: OutputGroup,
+
+    /// Number of frames to average together
+    #[arg(short, long, default_value_t = 256)]
+    pub burst_size: usize,
+
+    /// Frame rate of resulting video
+    #[arg(long, default_value_t = 25)]
+    pub fps: u64,
+
+    /// If enabled, add bitplane indices to images
+    #[arg(short, long, action)]
+    pub annotate_frames: bool,
 
     /// If enabled, invert the SPAD's response (Bernoulli process)
     #[arg(long, action)]
@@ -118,22 +127,38 @@ pub struct PreviewArgs {
     pub tonemap2srgb: bool,
 }
 
-pub fn preview(args: PreviewArgs) -> Result<()> {
+#[derive(Debug, Args)]
+pub struct ProcessArgs {
+    #[clap(flatten)]
+    pub common: PreviewProcessCommonArgs,
+
+    /// Path of output .npy file
+    #[arg(short, long)]
+    pub output: String,
+}
+
+fn load_cube(args: &PreviewProcessCommonArgs, step: Option<usize>) -> Result<PhotonCube> {
     // Load all the neccesary files
     let mut cube = PhotonCube::open(&args.input)?;
-    if let Some(cfa_path) = args.cfa_path {
+    if let Some(cfa_path) = &args.cfa_path {
         cube.load_cfa(&cfa_path)?;
     }
     for inpaint_path in args.inpaint_path.iter() {
         cube.load_mask(inpaint_path)?;
     }
-    cube.set_range(args.start.unwrap_or(0), args.end, Some(args.burst_size));
-    cube.set_transforms(args.transform);
+    cube.set_range(args.start.unwrap_or(0), args.end, step);
+    cube.set_transforms(args.transform.clone());
+    Ok(cube)
+}
+
+fn preview(args: PreviewArgs) -> Result<()> {
+    // Load all the neccesary files
+    let cube = load_cube(&args.common, Some(args.burst_size))?;
     let process = cube.process_single(
         args.invert_response,
         args.tonemap2srgb,
-        args.fix.colorspad_fix,
-        args.fix.grayspad_fix,
+        args.common.fix.colorspad_fix,
+        args.common.fix.grayspad_fix,
     )?;
 
     // Generate preview
@@ -164,6 +189,19 @@ pub fn preview(args: PreviewArgs) -> Result<()> {
     Ok(())
 }
 
+fn process(args: ProcessArgs) -> Result<()> {
+    // Load all the neccesary files
+    let cube = load_cube(&args.common, None)?;
+    let shape = cube.process_cube(
+        args.output.as_str(),
+        args.common.fix.colorspad_fix,
+        args.common.fix.grayspad_fix,
+        Some("Processing Cube..."),
+    )?;
+    println!("Saved cube of shape {shape:?} to {}", args.output.as_str());
+    Ok(())
+}
+
 #[pyfunction]
 pub fn cli_entrypoint(py: Python) -> Result<()> {
     // Start by telling python to not intercept CTRL+C signal,
@@ -185,5 +223,6 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
             Some("Converting..."),
         )?),
         Commands::Preview(args) => preview(args),
+        Commands::Process(args) => process(args),
     }
 }

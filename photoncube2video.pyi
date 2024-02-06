@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Tuple, Optional
 from typing_extensions import Self
 
 import numpy as np
@@ -20,6 +20,13 @@ class PhotonCube:
         is_full_array: bool,
         message: Optional[str],
     ) -> None: ...
+    def process_cube(
+        self: Self,
+        dst: str,
+        colorspad_fix: Optional[bool] = False,
+        grayspad_fix: Optional[bool] = False,
+        message=None,
+    ) -> Tuple[int]: ...
     def load_cfa(self: Self, path: str) -> None: ...
     def load_mask(self: Self, path: str) -> None: ...
     def set_range(

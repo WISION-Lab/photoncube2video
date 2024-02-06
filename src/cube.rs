@@ -25,8 +25,8 @@ use crate::{
     signals::DeferedSignal,
     transforms::{
         annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
-        interpolate_where_mask, linearrgb_to_srgb, process_colorspad, process_grayspad,
-        unpack_single, Transform,
+        grayimage_to_array2, interpolate_where_mask, linearrgb_to_srgb, pack_single,
+        process_colorspad, process_grayspad, unpack_single, Transform,
     },
     utils::sorted_glob,
 };
@@ -331,6 +331,99 @@ impl PhotonCube {
         })
     }
 
+    /// Apply corrections such as inpainting, rotating/flipping and any fixes directly
+    /// to every bitplane and save results as new `.npy` file.
+    pub fn process_cube(
+        &self,
+        dst: &str,
+        colorspad_fix: bool,
+        grayspad_fix: bool,
+        message: Option<&str>,
+    ) -> Result<(usize, usize, usize)> {
+        let path = Path::new(dst);
+        let ext = path.extension().unwrap().to_ascii_lowercase();
+
+        if path.is_file() || ext != "npy" {
+            // This should probably be a specific IO error?
+            return Err(anyhow!("Destination exists, or is not a `.npy` file."));
+        }
+
+        if colorspad_fix && grayspad_fix {
+            return Err(anyhow!(
+                "Cannot use both `colorspad_fix` and `grayspad_fix`."
+            ));
+        };
+
+        // Load all data
+        let view = self.view()?;
+        let slice = view.slice_axis(Axis(0), Slice::new(self.start, self.end, 1));
+
+        // Processing closure applied to every bitplane
+        let process_bitplane = |src_frame| {
+            let mut frame = unpack_single::<u8>(&src_frame, 1).unwrap();
+
+            // Apply any frame-level fixes
+            if colorspad_fix {
+                frame = process_colorspad(frame);
+            }
+            if grayspad_fix {
+                frame = process_grayspad(frame);
+            }
+
+            // Demosaic frame by interpolating white pixels
+            if let Some(mask) = &self.cfa_mask {
+                frame = interpolate_where_mask(&frame, mask, true).unwrap();
+            }
+
+            // Inpaint any hot/dead pixels
+            if let Some(mask) = &self.inpaint_mask {
+                frame = interpolate_where_mask(&frame, mask, true).unwrap();
+            }
+
+            // Convert to image, apply transforms and convert back
+            let frame = array2_to_grayimage(frame);
+            let frame = apply_transforms(frame, &self.transforms[..]);
+            grayimage_to_array2(frame)
+        };
+
+        // Create empty dst file
+        let file = File::create(dst)?;
+        let probe_bitplane = process_bitplane(slice.slice(s![0, .., ..]));
+        let (full_h, full_w) = probe_bitplane.dim();
+        let (out_h, out_w) = pack_single(&probe_bitplane.view(), 1)?.dim();
+        write_zeroed_npy::<u8, _>(&file, (slice.len_of(Axis(0)), out_h, out_w))
+            .map_err(|e| anyhow!(e))?;
+
+        // Memory-map the file and create the mutable view.
+        let file = OpenOptions::new().read(true).write(true).open(dst)?;
+        let mut mmap = unsafe { MmapMut::map_mut(&file)? };
+        let mut view_mut = ArrayViewMut3::<u8>::view_mut_npy(&mut mmap).map_err(|e| anyhow!(e))?;
+
+        // Conditionally setup a pbar
+        // TODO: Refactor this conditional pbar BS
+        let pbar = if let Some(msg) = message {
+            ProgressBar::new(slice.len_of(Axis(0)) as u64)
+                .with_style(ProgressStyle::with_template(
+                    "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
+                )?)
+                .with_message(msg.to_owned())
+        } else {
+            ProgressBar::hidden()
+        };
+
+        // Actually iterate and transform the data
+        (slice.axis_iter(Axis(0)), view_mut.axis_iter_mut(Axis(0)))
+            .into_par_iter()
+            .progress_with(pbar)
+            .for_each(|(src_frame, mut dst_frame)| {
+                // Process, bitpack it and save
+                let frame = process_bitplane(src_frame);
+                dst_frame.assign(&pack_single(&frame.view(), 1).unwrap());
+            });
+
+        Ok((slice.len_of(Axis(0)), full_h, full_w))
+    }
+
     /// Save all virtual exposures to a folder.
     pub fn save_images(
         &self,
@@ -470,6 +563,29 @@ impl PhotonCube {
     ) -> PyResult<()> {
         let _defer = DeferedSignal::new(py, "SIGINT")?;
         Self::convert_to_npy(src, dst, is_full_array, message).map_err(|e| e.into())
+    }
+
+    /// Apply corrections such as inpainting, rotating/flipping and any fixes directly
+    /// to every bitplane and save results as new `.npy` file.
+    #[pyo3(
+        name = "process_cube",
+        text_signature = "(dst, colorspad_fix=False, grayspad_fix=False, message=None) -> Tuple[int]"
+    )]
+    pub fn process_cube_py<'py>(
+        &'py self,
+        py: Python<'py>,
+        dst: &str,
+        colorspad_fix: Option<bool>,
+        grayspad_fix: Option<bool>,
+        message: Option<&str>,
+    ) -> Result<(usize, usize, usize)> {
+        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        self.process_cube(
+            dst,
+            colorspad_fix.unwrap_or(false),
+            grayspad_fix.unwrap_or(false),
+            message,
+        )
     }
 
     #[getter(inpaint_mask)]
