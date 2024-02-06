@@ -1,4 +1,4 @@
-use std::convert::{From, Into};
+use std::{convert::{From, Into}, ops::BitOrAssign};
 
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
@@ -51,6 +51,27 @@ where
     }
 
     Ok(unpacked_bitplane)
+}
+
+pub fn pack_single(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Result<Array2<u8>> {
+    let (h_orig, w_orig) = bitplane.dim();
+    let h = if axis == 0 { (h_orig as f32 / 8.0).ceil() as usize } else { h_orig };
+    let w = if axis == 1 { (w_orig as f32 / 8.0).ceil() as usize } else { w_orig };
+
+    // Allocate packed frame
+    let mut packed_bitplane = Array2::<u8>::zeros((h, w));
+
+    // Iterate through slices with stride 8 of the full array and fill up packed frame
+    // Note: We reverse the shift to account for endianness
+    for shift in 0..8 {
+        let ishift = 7 - shift;
+        let slice =
+            bitplane.slice_axis(Axis(axis), Slice::from(shift..).step_by(8));
+        let bit = slice.mapv(|v| (v & 1) << ishift);
+        packed_bitplane.bitor_assign(&bit);
+    }
+
+    Ok(packed_bitplane)
 }
 
 // Replaces `nshare::ToImageLuma` (which isn't actually implemented?!)
@@ -307,4 +328,29 @@ where
             frame[(i, j)]
         }
     }))
+}
+
+// ------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use ndarray::{array, Array2};
+
+    use crate::transforms::{pack_single, unpack_single};
+
+    #[test]
+    fn unpack_pack_axis0() {
+        let packed: Array2<u8> = array![[1,2,3],[4,5,6],[7,8,9]];
+        let unpacked = unpack_single(&packed.view(), 0).unwrap();
+        let repacked = pack_single(&unpacked.view(), 0).unwrap();
+        assert_eq!(packed, repacked);
+    }
+
+    #[test]
+    fn unpack_pack_axis1() {
+        let packed: Array2<u8> = array![[1,2,3],[4,5,6],[7,8,9]];
+        let unpacked = unpack_single(&packed.view(), 1).unwrap();
+        let repacked = pack_single(&unpacked.view(), 1).unwrap();
+        assert_eq!(packed, repacked);
+    }
 }
