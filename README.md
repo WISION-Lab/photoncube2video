@@ -129,7 +129,13 @@ We use [maturin](https://www.maturin.rs/) as a build system, which enables this 
 
 #### Code Quality
 
-We use `rustfmt` to format the codebase, we use some customizations (i.e for import sorting) which require nightly, use:
+We use `rustfmt` to format the codebase, we use some customizations (i.e for import sorting) which require nightly. First ensure you have the nightly toolchain installed with:
+```
+rustup toolchain install nightly
+```
+
+Then you can format the code using:
+
 ```
 cargo +nightly fmt 
 ```

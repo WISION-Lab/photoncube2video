@@ -281,7 +281,7 @@ impl PhotonCube {
                 .decode()?
                 .into_luma8()
                 .into_ndarray2()
-                .mapv(|v| v != 0);
+                .mapv(|v| v != 255);
             Ok(arr)
         }
     }
