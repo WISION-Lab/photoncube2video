@@ -238,6 +238,7 @@ pub fn binary_avg_to_rgb(
             .unwrap();
         frame.par_mapv_inplace(|v| (v / val).clamp(0.0, 1.0));
     } else {
+        // TODO: Is this branch needed?
         frame.par_mapv_inplace(|v| v.clamp(0.0, 1.0));
     };
 

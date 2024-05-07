@@ -122,6 +122,10 @@ pub struct PreviewArgs {
     #[arg(long, action)]
     pub invert_response: bool,
 
+    /// When inverting the SPAD's response, use this quantile to normalize data
+    #[arg(long, default_value = None)]
+    pub quantile: Option<f32>,
+
     /// If enabled, apply sRGB tonemapping to output
     #[arg(long, action)]
     pub tonemap2srgb: bool,
@@ -137,7 +141,7 @@ pub struct ProcessArgs {
     pub output: String,
 }
 
-fn load_cube(args: &PreviewProcessCommonArgs, step: Option<usize>) -> Result<PhotonCube> {
+fn load_cube(args: &PreviewProcessCommonArgs, step: Option<usize>, quantile: Option<f32>) -> Result<PhotonCube> {
     // Load all the neccesary files
     let mut cube = PhotonCube::open(&args.input)?;
     if let Some(cfa_path) = &args.cfa_path {
@@ -148,12 +152,13 @@ fn load_cube(args: &PreviewProcessCommonArgs, step: Option<usize>) -> Result<Pho
     }
     cube.set_range(args.start.unwrap_or(0), args.end, step);
     cube.set_transforms(args.transform.clone());
+    cube.set_quantile(quantile.clone());
     Ok(cube)
 }
 
 fn preview(args: PreviewArgs) -> Result<()> {
     // Load all the neccesary files
-    let cube = load_cube(&args.common, Some(args.burst_size))?;
+    let cube = load_cube(&args.common, Some(args.burst_size), args.quantile)?;
     let process = cube.process_single(
         args.invert_response,
         args.tonemap2srgb,
@@ -191,7 +196,7 @@ fn preview(args: PreviewArgs) -> Result<()> {
 
 fn process(args: ProcessArgs) -> Result<()> {
     // Load all the neccesary files
-    let cube = load_cube(&args.common, None)?;
+    let cube = load_cube(&args.common, None, None)?;
     let shape = cube.process_cube(
         args.output.as_str(),
         args.common.fix.colorspad_fix,

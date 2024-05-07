@@ -52,6 +52,9 @@ pub struct PhotonCube {
     #[pyo3(get, set)]
     pub step: Option<usize>,
 
+    #[pyo3(get, set)]
+    pub quantile: Option<f32>,
+
     pub transforms: Vec<Transform>,
 
     _storage: Mmap,
@@ -151,6 +154,7 @@ impl PhotonCube {
             start: 0,
             end: None,
             step: None,
+            quantile: None,
             transforms: vec![],
             _storage: mmap,
         })
@@ -260,6 +264,12 @@ impl PhotonCube {
     /// Method mirrors python API.
     pub fn set_transforms(&mut self, transforms: Vec<Transform>) {
         self.transforms = transforms;
+    }
+
+    /// Equivalent to setting `cube.quantile` directly.
+    /// Method mirrors python API.
+    pub fn set_quantile(&mut self, quantile: Option<f32>) {
+        self.quantile = quantile;
     }
 
     /// Load either a 2D NPY file or an intensity-only image file as an array of booleans.
@@ -675,6 +685,19 @@ impl PhotonCube {
             'Identity', 'Rot90', 'Rot180', 'Rot270', 'FlipUD', 'FlipLR'."
             )
         })?;
+        Ok(())
+    }
+
+    /// Set quantile to use when inverting SPAD response, this is only used 
+    /// when `invert_response` is set to True. Quantile must be in 0-1 range. 
+    #[pyo3(name = "set_quantile", text_signature = "(quantile=None)")]
+    pub fn set_quantile_py(&mut self, quantile: Option<f32>) -> Result<()> {
+        if let Some(qtl) = quantile {
+            if qtl < 0.0 || qtl > 1.0 {
+                return Err(anyhow!("Quantile value must be in 0-1 range."));
+            }
+        }
+        self.quantile = quantile;
         Ok(())
     }
 

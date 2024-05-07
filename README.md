@@ -60,12 +60,15 @@ pc.save_images(
     message="Saving Images..."  # If not None, a progress bar will be drawn
 )
 
-# Make video preview instead, but transform frames first
+# Make video preview instead, but transform frames first, and invert the SPAD
+# response, and normalize to a 95% quantile, for better low-light performance
 pc.set_transforms(["Rot90", "FlipUD"])
+pc.set_quantile(0.95)
 pc.save_video(
     "output.mp4", fps=24, 
     # If specified, images are also saved
     img_dir=None,
+    invert_response=True,
     # Options from `save_images` can be used here too:
     message="Making video..." 
 ) 
