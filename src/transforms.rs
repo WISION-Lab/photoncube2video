@@ -16,12 +16,11 @@ use imageproc::{
 use ndarray::{concatenate, s, Array, Array2, Array3, ArrayView2, ArrayView3, Axis, Slice};
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
+use pyo3::prelude::*;
 use rusttype::{Font, Scale};
 use strum_macros::EnumString;
 
-// Note: We cannot use #[pyclass] her as we're stuck in pyo3@0.15.2 to support py36, so
-// we use `EnumString` to convert strings into their enum values.
-// TODO: Use pyclass and remove strum dependency when we drop py36 support.
+#[pyclass]
 #[derive(ValueEnum, Clone, Copy, Debug, EnumString)]
 pub enum Transform {
     Identity,
@@ -30,6 +29,17 @@ pub enum Transform {
     Rot270,
     FlipUD,
     FlipLR,
+}
+
+#[pymethods]
+impl Transform {
+    /// Get transform from it's string repr, options are:
+    /// "identity", "rot90", "rot180", "rot270", "flip-ud", "flip-lr"
+    #[staticmethod]
+    #[pyo3(name = "from_str", text_signature = "(transform_name)")]
+    pub fn from_str_py(transform_name: &str) -> PyResult<Self> {
+        Self::from_str(transform_name, true).map_err(|e| anyhow!(e).into())
+    }
 }
 
 pub fn unpack_single<T>(bitplane: &ArrayView2<'_, u8>, axis: usize) -> Result<Array2<T>>

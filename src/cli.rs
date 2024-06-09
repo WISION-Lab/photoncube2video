@@ -4,7 +4,7 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use pyo3::prelude::*;
 
-use crate::{cube::PhotonCube, signals::DeferedSignal, transforms::Transform};
+use crate::{cube::PhotonCube, signals::DeferredSignal, transforms::Transform};
 
 /// Convert a photon cube (npy file/directory of bin files) between formats or to
 /// a video preview (mp4) by naively averaging frames.
@@ -141,18 +141,22 @@ pub struct ProcessArgs {
     pub output: String,
 }
 
-fn load_cube(args: &PreviewProcessCommonArgs, step: Option<usize>, quantile: Option<f32>) -> Result<PhotonCube> {
+fn load_cube(
+    args: &PreviewProcessCommonArgs,
+    step: Option<usize>,
+    quantile: Option<f32>,
+) -> Result<PhotonCube> {
     // Load all the neccesary files
     let mut cube = PhotonCube::open(&args.input)?;
     if let Some(cfa_path) = &args.cfa_path {
-        cube.load_cfa(&cfa_path)?;
+        cube.load_cfa(cfa_path)?;
     }
     for inpaint_path in args.inpaint_path.iter() {
         cube.load_mask(inpaint_path)?;
     }
     cube.set_range(args.start.unwrap_or(0), args.end, step);
     cube.set_transforms(args.transform.clone());
-    cube.set_quantile(quantile.clone());
+    cube.set_quantile(quantile);
     Ok(cube)
 }
 
@@ -212,7 +216,7 @@ pub fn cli_entrypoint(py: Python) -> Result<()> {
     // Start by telling python to not intercept CTRL+C signal,
     // Otherwise we won't get it here and will not be interruptable.
     // See: https://github.com/PyO3/pyo3/pull/3560
-    let _defer = DeferedSignal::new(py, "SIGINT")?;
+    let _defer = DeferredSignal::new(py, "SIGINT")?;
 
     // Parse arguments defined in struct
     // Since we're actually calling this via python, the first argument

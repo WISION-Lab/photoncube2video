@@ -1,7 +1,19 @@
+from enum import Enum, auto
 from typing import List, Tuple, Optional
 from typing_extensions import Self
 
 import numpy as np
+
+class Transform(Enum):
+    Identity = auto()
+    Rot90 = auto()
+    Rot180 = auto()
+    Rot270 = auto()
+    FlipUD = auto()
+    FlipLR = auto()
+
+    def from_str(transform_name: str) -> Self: ...
+    
 
 class PhotonCube:
     path: str
@@ -32,7 +44,7 @@ class PhotonCube:
     def set_range(
         self: Self, start: int, end: Optional[int] = None, step: Optional[int] = None
     ) -> None: ...
-    def set_transforms(self: Self, transforms: List[str]) -> None: ...
+    def set_transforms(self: Self, transforms: List[Transform]) -> None: ...
     def set_quantile(self: Self, quantile: Optional[float]) -> None: ...
     def save_images(
         img_dir,

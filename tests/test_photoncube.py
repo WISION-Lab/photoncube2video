@@ -3,13 +3,13 @@ import pytest
 
 def test_import():
     import photoncube2video
-    from photoncube2video import PhotonCube
+    from photoncube2video import PhotonCube, Transforms
 
 
 def test_masks_readonly():
     from photoncube2video import PhotonCube
 
-    pc = PhotonCube.open("data/binary.npy")
+    pc = PhotonCube.open("../aquisitions/binary.npy")
 
     assert pc.inpaint_mask == None
     assert pc.cfa_mask == None
@@ -25,7 +25,7 @@ def test_masks_readonly():
 def test_validate_transforms():
     from photoncube2video import PhotonCube
 
-    pc = PhotonCube.open("data/binary.npy")
+    pc = PhotonCube.open("../aquisitions/binary.npy")
 
     with pytest.raises(RuntimeError, match="Invalid transforms encountered"):
         pc.set_transforms(["rot180", "flip-lr"])

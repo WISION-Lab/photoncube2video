@@ -6,13 +6,15 @@ pub mod transforms;
 pub mod utils;
 
 use pyo3::prelude::*;
+use transforms::Transform;
 
-use crate::{cli::__pyo3_get_function_cli_entrypoint, cube::PhotonCube};
+use crate::{cli::cli_entrypoint, cube::PhotonCube};
 
 #[pymodule]
-fn photoncube2video(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn photoncube2video(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(cli_entrypoint, m)?)?;
     m.add_class::<PhotonCube>()?;
-    m.add_wrapped(wrap_pyfunction!(cli_entrypoint))?;
+    m.add_class::<Transform>()?;
 
     Ok(())
 }

@@ -4,7 +4,6 @@ use std::{
     io::Read,
     ops::BitOr,
     path::Path,
-    str::FromStr,
 };
 
 use anyhow::{anyhow, Error, Result};
@@ -14,15 +13,14 @@ use itertools::multizip;
 use memmap2::{Mmap, MmapMut};
 use ndarray::{prelude::*, Array, ArrayView3, Axis, Slice};
 use ndarray_npy::{read_npy, write_zeroed_npy, ViewMutNpyExt, ViewNpyError, ViewNpyExt};
-use nshare::ToNdarray2;
-use numpy::{PyArray2, ToPyArray};
+use numpy::{PyArray2, PyArrayMethods, ToPyArray};
 use pyo3::{prelude::*, types::PyType};
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use tempfile::tempdir;
 
 use crate::{
     ffmpeg::{ensure_ffmpeg, make_video},
-    signals::DeferedSignal,
+    signals::DeferredSignal,
     transforms::{
         annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
         grayimage_to_array2, interpolate_where_mask, linearrgb_to_srgb, pack_single,
@@ -52,9 +50,10 @@ pub struct PhotonCube {
     #[pyo3(get, set)]
     pub step: Option<usize>,
 
-    #[pyo3(get, set)]
+    #[pyo3(get)]
     pub quantile: Option<f32>,
 
+    #[pyo3(get)]
     pub transforms: Vec<Transform>,
 
     _storage: Mmap,
@@ -287,10 +286,7 @@ impl PhotonCube {
             let arr: Array2<bool> = read_npy(path)?;
             Ok(arr)
         } else {
-            let arr = ImageReader::open(path)?
-                .decode()?
-                .into_luma8()
-                .into_ndarray2()
+            let arr = grayimage_to_array2(ImageReader::open(path)?.decode()?.into_luma8())
                 .mapv(|v| v != 255);
             Ok(arr)
         }
@@ -449,7 +445,7 @@ impl PhotonCube {
                 "Step must be set before virtual exposures can be created!"
             ));
         }
-        create_dir_all(&img_dir).ok();
+        create_dir_all(img_dir).ok();
 
         // Create virtual exposures iterator over all data
         let view = self.view()?;
@@ -508,6 +504,7 @@ impl PhotonCube {
     }
 
     /// Save all virtual exposures as a video (and optionally images).
+    #[warn(clippy::too_many_arguments)]
     pub fn save_video(
         &self,
         output: &str,
@@ -521,16 +518,16 @@ impl PhotonCube {
         // Get img path or tempdir, ensure it exists.
         let tmp_dir = tempdir()?;
         let img_dir = img_dir.unwrap_or(tmp_dir.path().to_str().unwrap());
-        create_dir_all(&img_dir).ok();
+        create_dir_all(img_dir).ok();
 
         // Generate preview frames
-        let num_frames = self.save_images(&img_dir, process_fn, annotate_frames, message)?;
+        let num_frames = self.save_images(img_dir, process_fn, annotate_frames, message)?;
 
         // Assemble them into a video
         ensure_ffmpeg(true);
         make_video(
             Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
-            &output,
+            output,
             fps,
             num_frames as u64,
             message,
@@ -551,7 +548,7 @@ impl PhotonCube {
     /// entirely loading the photoncube into memory. Convert to `.npy` first.
     #[classmethod]
     #[pyo3(name = "open", text_signature = "(path)")]
-    pub fn open_py(_: &PyType, path: &str) -> Result<Self> {
+    pub fn open_py(_: &Bound<'_, PyType>, path: &str) -> Result<Self> {
         Self::open(path)
     }
 
@@ -571,7 +568,7 @@ impl PhotonCube {
         is_full_array: bool,
         message: Option<&str>,
     ) -> PyResult<()> {
-        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        let _defer = DeferredSignal::new(py, "SIGINT")?;
         Self::convert_to_npy(src, dst, is_full_array, message).map_err(|e| e.into())
     }
 
@@ -589,7 +586,7 @@ impl PhotonCube {
         grayspad_fix: Option<bool>,
         message: Option<&str>,
     ) -> Result<(usize, usize, usize)> {
-        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        let _defer = DeferredSignal::new(py, "SIGINT")?;
         self.process_cube(
             dst,
             colorspad_fix.unwrap_or(false),
@@ -604,7 +601,7 @@ impl PhotonCube {
         self.inpaint_mask
             .as_ref()
             .map(|a| -> Result<Py<PyAny>> {
-                let py_arr = a.to_pyarray(py).to_owned().into_py(py);
+                let py_arr = a.to_pyarray_bound(py).to_owned().into_py(py);
                 py_arr
                     .getattr(py, "setflags")?
                     .call1(py, (false, None::<bool>, None::<bool>))?;
@@ -614,8 +611,8 @@ impl PhotonCube {
     }
 
     #[setter(inpaint_mask)]
-    pub fn inpaint_mask_setter(&mut self, arr: Option<&PyArray2<bool>>) -> Result<()> {
-        self.inpaint_mask = arr.map(|a| a.to_owned_array());
+    pub fn inpaint_mask_setter(&mut self, arr: Option<&Bound<'_, PyArray2<bool>>>) -> Result<()> {
+        self.inpaint_mask = arr.map(|a| a.to_owned().to_owned_array());
         Ok(())
     }
 
@@ -625,7 +622,7 @@ impl PhotonCube {
         self.cfa_mask
             .as_ref()
             .map(|a| -> Result<Py<PyAny>> {
-                let py_arr = a.to_pyarray(py).to_owned().into_py(py);
+                let py_arr = a.to_pyarray_bound(py).to_owned().into_py(py);
                 py_arr
                     .getattr(py, "setflags")?
                     .call1(py, (false, None::<bool>, None::<bool>))?;
@@ -635,8 +632,8 @@ impl PhotonCube {
     }
 
     #[setter(cfa_mask)]
-    pub fn cfa_mask_setter(&mut self, arr: Option<&PyArray2<bool>>) -> Result<()> {
-        self.cfa_mask = arr.map(|a| a.to_owned_array());
+    pub fn cfa_mask_setter(&mut self, arr: Option<&Bound<'_, PyArray2<bool>>>) -> Result<()> {
+        self.cfa_mask = arr.map(|a| a.to_owned().to_owned_array());
         Ok(())
     }
 
@@ -674,26 +671,17 @@ impl PhotonCube {
     /// sequentially and can thus be composed (i.e: Rot90+Rot90=Rot180).
     /// Options are: "Identity", "Rot90", "Rot180", "Rot270", "FlipUD", "FlipLR"
     #[pyo3(name = "set_transforms", text_signature = "(transforms)")]
-    pub fn set_transforms_py(&mut self, transforms: Vec<&str>) -> Result<()> {
-        let transforms = transforms
-            .iter()
-            .map(|t| Transform::from_str(t))
-            .collect::<Result<Vec<_>, _>>();
-        self.transforms = transforms.map_err(|_| {
-            anyhow!(
-                "Invalid transforms encountered. Expected one or more of \
-            'Identity', 'Rot90', 'Rot180', 'Rot270', 'FlipUD', 'FlipLR'."
-            )
-        })?;
+    pub fn set_transforms_py(&mut self, transforms: Vec<Transform>) -> Result<()> {
+        self.transforms = transforms;
         Ok(())
     }
 
-    /// Set quantile to use when inverting SPAD response, this is only used 
-    /// when `invert_response` is set to True. Quantile must be in 0-1 range. 
+    /// Set quantile to use when inverting SPAD response, this is only used
+    /// when `invert_response` is set to True. Quantile must be in 0-1 range.
     #[pyo3(name = "set_quantile", text_signature = "(quantile=None)")]
     pub fn set_quantile_py(&mut self, quantile: Option<f32>) -> Result<()> {
         if let Some(qtl) = quantile {
-            if qtl < 0.0 || qtl > 1.0 {
+            if !(0.0..=1.0).contains(&qtl) {
                 return Err(anyhow!("Quantile value must be in 0-1 range."));
             }
         }
@@ -710,6 +698,7 @@ impl PhotonCube {
         text_signature = "(img_dir, invert_response=False, tonemap2srgb=False, \
             colorspad_fix=False, grayspad_fix=False, annotate_frames=False, message=None)"
     )]
+    #[warn(clippy::too_many_arguments)]
     pub fn save_images_py(
         &self,
         py: Python,
@@ -721,7 +710,7 @@ impl PhotonCube {
         annotate_frames: Option<bool>,
         message: Option<&str>,
     ) -> Result<isize> {
-        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        let _defer = DeferredSignal::new(py, "SIGINT")?;
         let process = self.process_single(
             invert_response.unwrap_or(false),
             tonemap2srgb.unwrap_or(false),
@@ -729,7 +718,7 @@ impl PhotonCube {
             grayspad_fix.unwrap_or(false),
         )?;
         self.save_images(
-            &img_dir,
+            img_dir,
             Some(process),
             annotate_frames.unwrap_or(false),
             message,
@@ -757,7 +746,7 @@ impl PhotonCube {
         annotate_frames: Option<bool>,
         message: Option<&str>,
     ) -> Result<isize> {
-        let _defer = DeferedSignal::new(py, "SIGINT")?;
+        let _defer = DeferredSignal::new(py, "SIGINT")?;
         let process = self.process_single(
             invert_response.unwrap_or(false),
             tonemap2srgb.unwrap_or(false),
