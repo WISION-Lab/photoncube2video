@@ -24,7 +24,7 @@ If this is your first time compiling a rust project, this may take a few minutes
 ### Library Usage (Python)
 
 ```python
-from photoncube2video import PhotonCube
+from photoncube2video import PhotonCube, Transforms
 
 PhotonCube.convert_to_npy(
     # Directory containing `.bin` files
@@ -62,7 +62,7 @@ pc.save_images(
 
 # Make video preview instead, but transform frames first, and invert the SPAD
 # response, and normalize to a 95% quantile, for better low-light performance
-pc.set_transforms(["Rot90", "FlipUD"])
+pc.set_transforms([Transforms.Rot90, Transforms.FlipUD])
 pc.set_quantile(0.95)
 pc.save_video(
     "output.mp4", fps=24, 
