@@ -292,7 +292,7 @@ where
         let frame = concatenate(Axis(0), &[top, Array2::zeros((1, 512)).view(), btm]).unwrap();
         frame.slice(s![2..-2, ..496]).to_owned()
     } else if h == 256 {
-        todo!()
+        frame.slice(s![2.., ..496]).to_owned()
     } else {
         unimplemented!(
             "A frame of ither 256x512 (top) or 512x512 is expected for `process_grayspad`."
