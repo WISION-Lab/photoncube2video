@@ -72,6 +72,10 @@ pc.save_video(
     # Options from `save_images` can be used here too:
     message="Making video..." 
 ) 
+
+# Save a new photoncube that has been processed with any transforms,
+# cfas, masks or colr/grayspad fixes.
+pc.process_cube("processed.npy")
 ```
 For the full python API and up-to-date typing, see [photoncube2video.pyi](./photoncube2video.pyi).
 

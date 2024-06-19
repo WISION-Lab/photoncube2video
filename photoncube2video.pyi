@@ -21,7 +21,7 @@ class PhotonCube:
     inpaint_mask: Optional[np.ndarray]
     start: int
     end: Optional[int]
-    step: Optional[int]
+    burst_size: Optional[int]
 
     @classmethod
     def open(path: str) -> Self: ...
@@ -42,7 +42,7 @@ class PhotonCube:
     def load_cfa(self: Self, path: str) -> None: ...
     def load_mask(self: Self, path: str) -> None: ...
     def set_range(
-        self: Self, start: int, end: Optional[int] = None, step: Optional[int] = None
+        self: Self, start: int, end: Optional[int] = None, burst_size: Optional[int] = None
     ) -> None: ...
     def set_transforms(self: Self, transforms: List[Transform]) -> None: ...
     def set_quantile(self: Self, quantile: Optional[float]) -> None: ...
@@ -54,6 +54,7 @@ class PhotonCube:
         grayspad_fix=False,
         annotate_frames=False,
         message=None,
+        step=1
     ) -> int: ...
     def save_video(
         output,
@@ -65,5 +66,6 @@ class PhotonCube:
         grayspad_fix=False,
         annotate_frames=False,
         message=None,
+        step=1
     ) -> int: ...
     def __len__(self: Self) -> int: ...

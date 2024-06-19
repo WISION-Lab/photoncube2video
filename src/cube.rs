@@ -48,7 +48,7 @@ pub struct PhotonCube {
     pub end: Option<isize>,
 
     #[pyo3(get, set)]
-    pub step: Option<usize>,
+    pub burst_size: Option<usize>,
 
     #[pyo3(get)]
     pub quantile: Option<f32>,
@@ -61,32 +61,35 @@ pub struct PhotonCube {
 pub type PhotonCubeView<'a> = ArrayView3<'a, u8>;
 
 pub trait VirtualExposure {
-    /// Create parallel iterator over all virtual exposures (bitplane averages of depth `step`)
+    /// Create parallel iterator over all virtual exposures (bitplane averages of depth `burst_size`)
     fn par_virtual_exposures(
         &self,
+        burst_size: usize,
         step: usize,
         drop_last: bool,
     ) -> impl IndexedParallelIterator<Item = Array2<f32>>;
 
-    /// Create a sequential iterator over all virtual exposures (bitplane averages of depth `step`)
-    fn virtual_exposures(&self, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>>;
+    /// Create a sequential iterator over all virtual exposures (bitplane averages of depth `burst_size`)
+    fn virtual_exposures(&self, burst_size: usize, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>>;
 }
 
 impl<'a> VirtualExposure for PhotonCubeView<'a> {
     fn par_virtual_exposures(
         &self,
+        burst_size: usize,
         step: usize,
         drop_last: bool,
     ) -> impl IndexedParallelIterator<Item = Array2<f32>> {
         let num_frames = if drop_last {
-            self.len_of(Axis(0)) / step
+            self.len_of(Axis(0)) / burst_size
         } else {
-            (self.len_of(Axis(0)) as f32 / step as f32).ceil() as usize
+            (self.len_of(Axis(0)) as f32 / burst_size as f32).ceil() as usize
         };
 
-        self.axis_chunks_iter(Axis(0), step)
+        self.axis_chunks_iter(Axis(0), burst_size)
             // Make it parallel
             .into_par_iter()
+            .step_by(step)
             .map(|group| {
                 let (num_frames, _, _) = group.dim();
                 let mut frame = group
@@ -104,14 +107,14 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
             .take(num_frames)
     }
 
-    fn virtual_exposures(&self, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>> {
+    fn virtual_exposures(&self, burst_size: usize, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>> {
         let num_frames = if drop_last {
-            self.len_of(Axis(0)) / step
+            self.len_of(Axis(0)) / burst_size
         } else {
-            (self.len_of(Axis(0)) as f32 / step as f32).ceil() as usize
+            (self.len_of(Axis(0)) as f32 / burst_size as f32).ceil() as usize
         };
 
-        self.axis_chunks_iter(Axis(0), step)
+        self.axis_chunks_iter(Axis(0), burst_size).step_by(step)
             .map(|group| {
                 let (num_frames, _, _) = group.dim();
                 let mut frame = group
@@ -152,7 +155,7 @@ impl PhotonCube {
             inpaint_mask: None,
             start: 0,
             end: None,
-            step: None,
+            burst_size: None,
             quantile: None,
             transforms: vec![],
             _storage: mmap,
@@ -437,12 +440,13 @@ impl PhotonCube {
         process_fn: Option<impl Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync>,
         annotate_frames: bool,
         message: Option<&str>,
+        step: usize
     ) -> Result<isize> {
         // Do some quick validation
         let img_dir_path = Path::new(&img_dir);
-        if self.step.is_none() {
+        if self.burst_size.is_none() {
             return Err(anyhow!(
-                "Step must be set before virtual exposures can be created!"
+                "Parameter `burst_size` must be set before virtual exposures can be created!"
             ));
         }
         create_dir_all(img_dir).ok();
@@ -450,11 +454,11 @@ impl PhotonCube {
         // Create virtual exposures iterator over all data
         let view = self.view()?;
         let slice = view.slice_axis(Axis(0), Slice::new(self.start, self.end, 1));
-        let virtual_exps = slice.par_virtual_exposures(self.step.unwrap(), true);
+        let virtual_exps = slice.par_virtual_exposures(self.burst_size.unwrap(), step, true);
 
         // Conditionally setup a pbar
         let pbar = if let Some(msg) = message {
-            ProgressBar::new((slice.len_of(Axis(0)) / self.step.unwrap()) as u64)
+            ProgressBar::new((slice.len_of(Axis(0)) / self.burst_size.unwrap()) as u64)
                 .with_style(ProgressStyle::with_template(
                     "{msg} ETA:{eta}, [{elapsed_precise}] {wide_bar:.cyan/blue} {pos:>6}/{len:6}",
                 )?)
@@ -485,9 +489,9 @@ impl PhotonCube {
                     let mut frame = gray_to_rgbimage(&frame);
 
                     if annotate_frames {
-                        let start_idx = i * self.step.unwrap() + (self.start as usize);
+                        let start_idx = i * self.burst_size.unwrap() + (self.start as usize);
                         let text =
-                            format!("{:06}:{:06}", start_idx, start_idx + self.step.unwrap());
+                            format!("{:06}:{:06}", start_idx, start_idx + self.burst_size.unwrap());
                         annotate(&mut frame, &text, Rgb([252, 186, 3]));
                     }
 
@@ -514,6 +518,7 @@ impl PhotonCube {
         annotate_frames: bool,
         message: Option<&str>,
         metadata: Option<HashMap<&str, &str>>,
+        step: usize
     ) -> Result<isize> {
         // Get img path or tempdir, ensure it exists.
         let tmp_dir = tempdir()?;
@@ -521,7 +526,7 @@ impl PhotonCube {
         create_dir_all(img_dir).ok();
 
         // Generate preview frames
-        let num_frames = self.save_images(img_dir, process_fn, annotate_frames, message)?;
+        let num_frames = self.save_images(img_dir, process_fn, annotate_frames, message, step)?;
 
         // Assemble them into a video
         ensure_ffmpeg(true);
@@ -659,12 +664,12 @@ impl PhotonCube {
     }
 
     /// Set the range of the photoncube, this is used for slicing and frame preview
-    /// where `step` will be the number of frames to average together.
-    #[pyo3(text_signature = "(start, end=None, step=None)")]
-    pub fn set_range(&mut self, start: isize, end: Option<isize>, step: Option<usize>) {
+    /// where `burst_size` will be the number of frames to average together.
+    #[pyo3(text_signature = "(start, end=None, burst_size=None)")]
+    pub fn set_range(&mut self, start: isize, end: Option<isize>, burst_size: Option<usize>) {
         self.start = start;
         self.end = end;
-        self.step = step;
+        self.burst_size = burst_size;
     }
 
     /// Define which transforms to apply to virtual exposures. Tranforms are applied
@@ -709,6 +714,7 @@ impl PhotonCube {
         grayspad_fix: Option<bool>,
         annotate_frames: Option<bool>,
         message: Option<&str>,
+        step: Option<usize>
     ) -> Result<isize> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
         let process = self.process_single(
@@ -722,6 +728,7 @@ impl PhotonCube {
             Some(process),
             annotate_frames.unwrap_or(false),
             message,
+            step.unwrap_or(1)
         )
     }
 
@@ -745,6 +752,7 @@ impl PhotonCube {
         grayspad_fix: Option<bool>,
         annotate_frames: Option<bool>,
         message: Option<&str>,
+        step: Option<usize>
     ) -> Result<isize> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
         let process = self.process_single(
@@ -761,6 +769,7 @@ impl PhotonCube {
             annotate_frames.unwrap_or(false),
             message,
             None,
+            step.unwrap_or(1)
         )
     }
 

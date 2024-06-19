@@ -110,6 +110,10 @@ pub struct PreviewArgs {
     #[arg(short, long, default_value_t = 256)]
     pub burst_size: usize,
 
+    /// Only save every nth averaged frame
+    #[arg(short, long, default_value_t = 1)]
+    pub step: usize,
+
     /// Frame rate of resulting video
     #[arg(long, default_value_t = 25)]
     pub fps: u64,
@@ -143,7 +147,7 @@ pub struct ProcessArgs {
 
 fn load_cube(
     args: &PreviewProcessCommonArgs,
-    step: Option<usize>,
+    burst_size: Option<usize>,
     quantile: Option<f32>,
 ) -> Result<PhotonCube> {
     // Load all the neccesary files
@@ -154,7 +158,7 @@ fn load_cube(
     for inpaint_path in args.inpaint_path.iter() {
         cube.load_mask(inpaint_path)?;
     }
-    cube.set_range(args.start.unwrap_or(0), args.end, step);
+    cube.set_range(args.start.unwrap_or(0), args.end, burst_size);
     cube.set_transforms(args.transform.clone());
     cube.set_quantile(quantile);
     Ok(cube)
@@ -185,6 +189,7 @@ fn preview(args: PreviewArgs) -> Result<()> {
             args.annotate_frames,
             Some("Making video..."),
             Some(HashMap::from([("comment", cmd.as_str())])),
+            args.step
         )?;
     } else {
         cube.save_images(
@@ -192,6 +197,7 @@ fn preview(args: PreviewArgs) -> Result<()> {
             Some(process),
             args.annotate_frames,
             Some("Processing Frames..."),
+            args.step
         )?;
     };
 

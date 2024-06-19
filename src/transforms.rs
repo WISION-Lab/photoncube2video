@@ -295,7 +295,7 @@ where
         frame.slice(s![2.., ..496]).to_owned()
     } else {
         unimplemented!(
-            "A frame of ither 256x512 (top) or 512x512 is expected for `process_grayspad`."
+            "A frame of either 256x512 (top) or 512x512 is expected for `process_grayspad`."
         )
     }
 }
