@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
 use ffmpeg_sidecar::{
     command::{ffmpeg_is_installed, FfmpegCommand},
@@ -6,6 +6,21 @@ use ffmpeg_sidecar::{
     paths::sidecar_dir,
 };
 use indicatif::{ProgressBar, ProgressStyle};
+use strum_macros::{Display, EnumString};
+
+#[derive(Debug, Clone, Copy, EnumString, Display)]
+#[strum(serialize_all = "lowercase")]
+pub enum Preset {
+    UltraFast,
+    SuperFast,
+    VeryFast,
+    Faster,
+    Fast,
+    Medium,
+    Slow,
+    Slower,
+    VerySlow,
+}
 
 pub fn ensure_ffmpeg(verbose: bool) {
     if !ffmpeg_is_installed() {
@@ -19,11 +34,14 @@ pub fn ensure_ffmpeg(verbose: bool) {
     }
 }
 
-pub fn make_video(
+#[allow(clippy::too_many_arguments)]
+pub fn make_video<P: AsRef<Path>>(
     pattern: &str,
-    outfile: &str,
+    outfile: P,
     fps: u64,
     num_frames: u64,
+    crf: Option<u32>,
+    preset: Option<Preset>,
     message: Option<&str>,
     metadata: Option<HashMap<&str, &str>>,
 ) {
@@ -52,10 +70,12 @@ pub fn make_video(
 
     let cmd = format!(
         // Scale to a max width of 1280 pixels as long as the height is divisible by 2
-        "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf 22 -pix_fmt yuv420p -vf scale=1280:-2"
+        "-framerate {fps} -f image2 -i {pattern} -y -vcodec libx264 -crf {} -pix_fmt yuv420p -vf scale=1280:-2 -preset {}", 
+        crf.unwrap_or(28), preset.unwrap_or(Preset::UltraFast).to_string().to_lowercase()
     );
     let mut output = "".to_owned();
 
+    let outfile = outfile.as_ref().to_str().expect("Outfile should be valid");
     let mut ffmpeg_runner = FfmpegCommand::new()
         .args(cmd.split(' '))
         .args(metadata_args)

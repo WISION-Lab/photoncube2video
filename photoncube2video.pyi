@@ -1,3 +1,4 @@
+from os import PathLike
 from enum import Enum, auto
 from typing import List, Tuple, Optional
 from typing_extensions import Self
@@ -13,7 +14,6 @@ class Transform(Enum):
     FlipLR = auto()
 
     def from_str(transform_name: str) -> Self: ...
-    
 
 class PhotonCube:
     path: str
@@ -24,48 +24,53 @@ class PhotonCube:
     burst_size: Optional[int]
 
     @classmethod
-    def open(path: str) -> Self: ...
+    def open(path: PathLike) -> Self: ...
     @staticmethod
     def convert_to_npy(
-        src: str,
-        dst: str,
-        is_full_array: bool,
-        message: Optional[str],
+        src: PathLike,
+        dst: PathLike,
+        is_full_array: bool = False,
+        message: Optional[str] = None,
     ) -> None: ...
     def process_cube(
         self: Self,
-        dst: str,
+        dst: PathLike,
         colorspad_fix: Optional[bool] = False,
         grayspad_fix: Optional[bool] = False,
-        message=None,
+        message: Optional[str] = None,
     ) -> Tuple[int]: ...
-    def load_cfa(self: Self, path: str) -> None: ...
-    def load_mask(self: Self, path: str) -> None: ...
+    def load_cfa(self: Self, path: PathLike) -> None: ...
+    def load_mask(self: Self, path: PathLike) -> None: ...
     def set_range(
-        self: Self, start: int, end: Optional[int] = None, burst_size: Optional[int] = None
+        self: Self,
+        start: int = 0,
+        end: Optional[int] = None,
+        burst_size: Optional[int] = None,
     ) -> None: ...
     def set_transforms(self: Self, transforms: List[Transform]) -> None: ...
     def set_quantile(self: Self, quantile: Optional[float]) -> None: ...
     def save_images(
-        img_dir,
-        invert_response=False,
-        tonemap2srgb=False,
-        colorspad_fix=False,
-        grayspad_fix=False,
-        annotate_frames=False,
-        message=None,
-        step=1
+        img_dir: PathLike = None,
+        invert_response: bool = False,
+        tonemap2srgb: bool = False,
+        colorspad_fix: bool = False,
+        grayspad_fix: bool = False,
+        annotate_frames: bool = False,
+        message: Optional[str] = None,
+        step: int = 1,
     ) -> int: ...
     def save_video(
-        output,
-        fps=24,
-        img_dir=None,
-        invert_response=False,
-        tonemap2srgb=False,
-        colorspad_fix=False,
-        grayspad_fix=False,
-        annotate_frames=False,
-        message=None,
-        step=1
+        output: PathLike,
+        fps: int = 24,
+        img_dir: Optional[PathLike] = None,
+        invert_response: bool = False,
+        tonemap2srgb: bool = False,
+        colorspad_fix: bool = False,
+        grayspad_fix: bool = False,
+        annotate_frames: bool = False,
+        crf: int = 28,
+        preset: str = "ultrafast",
+        message: Optional[str] = None,
+        step: int = 1,
     ) -> int: ...
     def __len__(self: Self) -> int: ...

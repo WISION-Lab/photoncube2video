@@ -1,10 +1,10 @@
-use std::{collections::HashMap, convert::From, env};
+use std::{collections::HashMap, convert::From, env, path::PathBuf};
 
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use pyo3::prelude::*;
 
-use crate::{cube::PhotonCube, signals::DeferredSignal, transforms::Transform};
+use crate::{cube::PhotonCube, ffmpeg::Preset, signals::DeferredSignal, transforms::Transform};
 
 /// Convert a photon cube (npy file/directory of bin files) between formats or to
 /// a video preview (mp4) by naively averaging frames.
@@ -31,11 +31,11 @@ pub enum Commands {
 pub struct ConvertArgs {
     /// Path of input photon cube (directory of .bin files)
     #[arg(short, long)]
-    pub input: String,
+    pub input: PathBuf,
 
     /// Path of output photon cube (must be .npy)
     #[arg(short, long)]
-    pub output: String,
+    pub output: PathBuf,
 
     /// If enabled, assume data is 512x512
     #[arg(long, action)]
@@ -48,11 +48,11 @@ pub struct ConvertArgs {
 pub struct OutputGroup {
     /// Path of output video
     #[arg(short, long)]
-    pub output: Option<String>,
+    pub output: Option<PathBuf>,
 
     /// Output directory to save PNGs in
     #[arg(short = 'd', long)]
-    pub img_dir: Option<String>,
+    pub img_dir: Option<PathBuf>,
 }
 
 // Ensures that at most one of these two is set.
@@ -72,15 +72,15 @@ pub struct FixGroup {
 pub struct PreviewProcessCommonArgs {
     /// Path to photon cube (.npy file expected)
     #[arg(short, long)]
-    pub input: String,
+    pub input: PathBuf,
 
     /// Path of color filter array to use for demosaicing
     #[arg(long, default_value = None)]
-    pub cfa_path: Option<String>,
+    pub cfa_path: Option<PathBuf>,
 
     /// Path of inpainting mask to use for filtering out dead/hot pixels
     #[arg(long, num_args(0..))]
-    pub inpaint_path: Vec<String>,
+    pub inpaint_path: Vec<PathBuf>,
 
     /// Apply transformations to each frame (these can be composed)
     #[arg(short, long, value_enum, num_args(0..))]
@@ -115,7 +115,7 @@ pub struct PreviewArgs {
     pub step: usize,
 
     /// Frame rate of resulting video
-    #[arg(long, default_value_t = 25)]
+    #[arg(long, default_value_t = 24)]
     pub fps: u64,
 
     /// If enabled, add bitplane indices to images
@@ -133,6 +133,14 @@ pub struct PreviewArgs {
     /// If enabled, apply sRGB tonemapping to output
     #[arg(long, action)]
     pub tonemap2srgb: bool,
+
+    /// Constant rate factor of output video, see: https://trac.ffmpeg.org/wiki/Encode/H.264
+    #[arg(long, default_value_t = 28)]
+    pub crf: u32,
+
+    /// FFMpeg preset, see: https://trac.ffmpeg.org/wiki/Encode/H.264
+    #[arg(long, value_enum, default_value = "ultrafast")]
+    pub preset: Preset,
 }
 
 #[derive(Debug, Args)]
@@ -142,7 +150,7 @@ pub struct ProcessArgs {
 
     /// Path of output .npy file
     #[arg(short, long)]
-    pub output: String,
+    pub output: PathBuf,
 }
 
 fn load_cube(
@@ -150,13 +158,13 @@ fn load_cube(
     burst_size: Option<usize>,
     quantile: Option<f32>,
 ) -> Result<PhotonCube> {
-    // Load all the neccesary files
+    // Load all the necessary files
     let mut cube = PhotonCube::open(&args.input)?;
     if let Some(cfa_path) = &args.cfa_path {
-        cube.load_cfa(cfa_path)?;
+        cube.load_cfa(cfa_path.to_path_buf())?;
     }
     for inpaint_path in args.inpaint_path.iter() {
-        cube.load_mask(inpaint_path)?;
+        cube.load_mask(inpaint_path.to_path_buf())?;
     }
     cube.set_range(args.start.unwrap_or(0), args.end, burst_size);
     cube.set_transforms(args.transform.clone());
@@ -182,22 +190,24 @@ fn preview(args: PreviewArgs) -> Result<()> {
         );
 
         cube.save_video(
-            output.as_str(),
+            output,
             args.fps,
-            args.outputs.img_dir.as_deref(),
+            args.outputs.img_dir,
             Some(process),
             args.annotate_frames,
+            Some(args.crf),
+            Some(args.preset),
             Some("Making video..."),
             Some(HashMap::from([("comment", cmd.as_str())])),
-            args.step
+            args.step,
         )?;
     } else {
         cube.save_images(
-            args.outputs.img_dir.unwrap().as_str(),
+            args.outputs.img_dir.unwrap(),
             Some(process),
             args.annotate_frames,
             Some("Processing Frames..."),
-            args.step
+            args.step,
         )?;
     };
 
@@ -205,15 +215,15 @@ fn preview(args: PreviewArgs) -> Result<()> {
 }
 
 fn process(args: ProcessArgs) -> Result<()> {
-    // Load all the neccesary files
+    // Load all the necessary files
     let cube = load_cube(&args.common, None, None)?;
     let shape = cube.process_cube(
-        args.output.as_str(),
+        args.output.as_path(),
         args.common.fix.colorspad_fix,
         args.common.fix.grayspad_fix,
         Some("Processing Cube..."),
     )?;
-    println!("Saved cube of shape {shape:?} to {}", args.output.as_str());
+    println!("Saved cube of shape {shape:?} to {}", args.output.display());
     Ok(())
 }
 

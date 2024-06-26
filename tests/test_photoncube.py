@@ -3,7 +3,7 @@ import pytest
 
 def test_import():
     import photoncube2video
-    from photoncube2video import PhotonCube, Transforms
+    from photoncube2video import PhotonCube, Transform
 
 
 def test_masks_readonly():
@@ -23,9 +23,7 @@ def test_masks_readonly():
 
 
 def test_validate_transforms():
-    from photoncube2video import PhotonCube
+    from photoncube2video import Transform
 
-    pc = PhotonCube.open("../aquisitions/binary.npy")
-
-    with pytest.raises(RuntimeError, match="Invalid transforms encountered"):
-        pc.set_transforms(["rot180", "flip-lr"])
+    with pytest.raises(RuntimeError, match="invalid variant"):
+        Transform.from_str("abc")

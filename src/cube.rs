@@ -3,7 +3,8 @@ use std::{
     fs::{create_dir_all, File, OpenOptions},
     io::Read,
     ops::BitOr,
-    path::Path,
+    path::{Path, PathBuf},
+    str::FromStr,
 };
 
 use anyhow::{anyhow, Error, Result};
@@ -19,7 +20,7 @@ use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterato
 use tempfile::tempdir;
 
 use crate::{
-    ffmpeg::{ensure_ffmpeg, make_video},
+    ffmpeg::{ensure_ffmpeg, make_video, Preset},
     signals::DeferredSignal,
     transforms::{
         annotate, apply_transforms, array2_to_grayimage, binary_avg_to_rgb, gray_to_rgbimage,
@@ -33,7 +34,7 @@ use crate::{
 #[derive(Debug)]
 pub struct PhotonCube {
     #[pyo3(get)]
-    pub path: String,
+    pub path: PathBuf,
 
     // Custom getter/setter implemented below
     pub cfa_mask: Option<Array2<bool>>,
@@ -70,7 +71,12 @@ pub trait VirtualExposure {
     ) -> impl IndexedParallelIterator<Item = Array2<f32>>;
 
     /// Create a sequential iterator over all virtual exposures (bitplane averages of depth `burst_size`)
-    fn virtual_exposures(&self, burst_size: usize, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>>;
+    fn virtual_exposures(
+        &self,
+        burst_size: usize,
+        step: usize,
+        drop_last: bool,
+    ) -> impl Iterator<Item = Array2<f32>>;
 }
 
 impl<'a> VirtualExposure for PhotonCubeView<'a> {
@@ -107,14 +113,20 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
             .take(num_frames)
     }
 
-    fn virtual_exposures(&self, burst_size: usize, step: usize, drop_last: bool) -> impl Iterator<Item = Array2<f32>> {
+    fn virtual_exposures(
+        &self,
+        burst_size: usize,
+        step: usize,
+        drop_last: bool,
+    ) -> impl Iterator<Item = Array2<f32>> {
         let num_frames = if drop_last {
             self.len_of(Axis(0)) / burst_size
         } else {
             (self.len_of(Axis(0)) as f32 / burst_size as f32).ceil() as usize
         };
 
-        self.axis_chunks_iter(Axis(0), burst_size).step_by(step)
+        self.axis_chunks_iter(Axis(0), burst_size)
+            .step_by(step)
             .map(|group| {
                 let (num_frames, _, _) = group.dim();
                 let mut frame = group
@@ -137,20 +149,26 @@ impl<'a> VirtualExposure for PhotonCubeView<'a> {
 impl PhotonCube {
     /// Open a photoncube from a memmapped `.npy` file.
     /// For more see `open_py`, the python analogue to this method.
-    pub fn open(path_str: &str) -> Result<Self> {
-        let path = Path::new(path_str);
+    pub fn open<P>(path: P) -> Result<Self>
+    where
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
         let ext = path.extension().unwrap().to_ascii_lowercase();
 
         if !path.exists() || !path.is_file() || ext != "npy" {
-            // This should probably be a specific IO error?
-            return Err(anyhow!("No `.npy` file found at {}!", path_str));
+            // TODO: This should probably be a specific IO error?
+            return Err(anyhow!(
+                "No `.npy` file found at {}!",
+                path.to_str().expect("Path should be valid")
+            ));
         }
 
-        let file = File::open(path_str)?;
+        let file = File::open(path)?;
         let mmap = unsafe { Mmap::map(&file)? };
 
         Ok(Self {
-            path: path_str.to_string(),
+            path: path.to_path_buf(),
             cfa_mask: None,
             inpaint_mask: None,
             start: 0,
@@ -164,21 +182,24 @@ impl PhotonCube {
 
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one.
     /// For more see `convert_to_npy_py`, the python analogue to this method.
-    pub fn convert_to_npy(
-        src: &str,
-        dst: &str,
+    pub fn convert_to_npy<P: AsRef<Path> + Copy>(
+        src: P,
+        dst: P,
         is_full_array: bool,
         message: Option<&str>,
     ) -> Result<()> {
-        let path = Path::new(src);
+        let path = src.as_ref();
 
         if !path.exists() || !path.is_dir() {
             // This should probably be a specific IO error?
-            Err(anyhow!("Directory of `.bin` files not found at {}!", src))
+            Err(anyhow!(
+                "Directory of `.bin` files not found at {}!",
+                path.display()
+            ))
         } else {
             let paths = sorted_glob(path, "**/*.bin")?;
             if paths.is_empty() {
-                return Err(anyhow!("No .bin files found in {}!", src));
+                return Err(anyhow!("No .bin files found in {}!", path.display()));
             }
 
             // Create a (sparse if supported) file of zeroed data.
@@ -278,13 +299,13 @@ impl PhotonCube {
     /// Note: For the image, any pure white pixels are false, all others are true.
     ///       This is contrary to what you might expect but enables us to load in the
     ///       colorSPAD's cfa array and have a mask representing the colored pixels.
-    pub fn _try_load_mask(path: &str) -> Result<Array2<bool>> {
-        let path_obj = Path::new(&path);
+    pub fn _try_load_mask<P: AsRef<Path>>(path: P) -> Result<Array2<bool>> {
+        let path_obj = path.as_ref();
         let ext = path_obj.extension().unwrap().to_ascii_lowercase();
 
         if !path_obj.exists() {
             // This should probably be a specific IO error?
-            Err(anyhow!("File not found at {}!", path))
+            Err(anyhow!("File not found at {}!", path_obj.display()))
         } else if ext == "npy" || ext == "npz" {
             let arr: Array2<bool> = read_npy(path)?;
             Ok(arr)
@@ -342,14 +363,14 @@ impl PhotonCube {
 
     /// Apply corrections such as inpainting, rotating/flipping and any fixes directly
     /// to every bitplane and save results as new `.npy` file.
-    pub fn process_cube(
+    pub fn process_cube<P: AsRef<Path> + Copy>(
         &self,
-        dst: &str,
+        dst: P,
         colorspad_fix: bool,
         grayspad_fix: bool,
         message: Option<&str>,
     ) -> Result<(usize, usize, usize)> {
-        let path = Path::new(dst);
+        let path = dst.as_ref();
         let ext = path.extension().unwrap().to_ascii_lowercase();
 
         if path.is_file() || ext != "npy" {
@@ -434,22 +455,22 @@ impl PhotonCube {
     }
 
     /// Save all virtual exposures to a folder.
-    pub fn save_images(
+    pub fn save_images<P: AsRef<Path>>(
         &self,
-        img_dir: &str,
+        img_dir: P,
         process_fn: Option<impl Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync>,
         annotate_frames: bool,
         message: Option<&str>,
-        step: usize
+        step: usize,
     ) -> Result<isize> {
         // Do some quick validation
-        let img_dir_path = Path::new(&img_dir);
+        let img_dir_path = img_dir.as_ref();
         if self.burst_size.is_none() {
             return Err(anyhow!(
                 "Parameter `burst_size` must be set before virtual exposures can be created!"
             ));
         }
-        create_dir_all(img_dir).ok();
+        create_dir_all(img_dir_path).ok();
 
         // Create virtual exposures iterator over all data
         let view = self.view()?;
@@ -490,8 +511,11 @@ impl PhotonCube {
 
                     if annotate_frames {
                         let start_idx = i * self.burst_size.unwrap() + (self.start as usize);
-                        let text =
-                            format!("{:06}:{:06}", start_idx, start_idx + self.burst_size.unwrap());
+                        let text = format!(
+                            "{:06}:{:06}",
+                            start_idx,
+                            start_idx + self.burst_size.unwrap()
+                        );
                         annotate(&mut frame, &text, Rgb([252, 186, 3]));
                     }
 
@@ -508,22 +532,30 @@ impl PhotonCube {
     }
 
     /// Save all virtual exposures as a video (and optionally images).
-    #[warn(clippy::too_many_arguments)]
-    pub fn save_video(
+    #[allow(clippy::too_many_arguments)]
+    pub fn save_video<P: AsRef<Path>>(
         &self,
-        output: &str,
+        output: P,
         fps: u64,
-        img_dir: Option<&str>,
+        img_dir: Option<P>,
         process_fn: Option<impl Fn(Array2<f32>) -> Result<Array2<f32>> + Send + Sync>,
         annotate_frames: bool,
+        crf: Option<u32>,
+        preset: Option<Preset>,
         message: Option<&str>,
         metadata: Option<HashMap<&str, &str>>,
-        step: usize
+        step: usize,
     ) -> Result<isize> {
         // Get img path or tempdir, ensure it exists.
         let tmp_dir = tempdir()?;
-        let img_dir = img_dir.unwrap_or(tmp_dir.path().to_str().unwrap());
-        create_dir_all(img_dir).ok();
+        let img_dir = img_dir
+            .map(|p| {
+                let path: &Path = p.as_ref();
+                path.to_owned()
+            })
+            .unwrap_or(tmp_dir.path().to_path_buf());
+        let pattern = img_dir.join("frame%06d.png");
+        create_dir_all(img_dir.clone()).ok();
 
         // Generate preview frames
         let num_frames = self.save_images(img_dir, process_fn, annotate_frames, message, step)?;
@@ -531,10 +563,12 @@ impl PhotonCube {
         // Assemble them into a video
         ensure_ffmpeg(true);
         make_video(
-            Path::new(&img_dir).join("frame%06d.png").to_str().unwrap(),
+            pattern.to_str().expect("Pattern should be valid"),
             output,
             fps,
             num_frames as u64,
+            crf,
+            preset,
             message,
             metadata,
         );
@@ -553,8 +587,8 @@ impl PhotonCube {
     /// entirely loading the photoncube into memory. Convert to `.npy` first.
     #[classmethod]
     #[pyo3(name = "open", text_signature = "(path)")]
-    pub fn open_py(_: &Bound<'_, PyType>, path: &str) -> Result<Self> {
-        Self::open(path)
+    pub fn open_py(_: &Bound<'_, PyType>, path: PathBuf) -> Result<Self> {
+        Self::open(path.to_str().expect("Path should be valid"))
     }
 
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
@@ -564,38 +598,44 @@ impl PhotonCube {
     #[staticmethod]
     #[pyo3(
         name = "convert_to_npy",
-        text_signature = "(src, dst, is_full_array=False, message=None)"
+        signature = (src, dst, is_full_array=false, message=None)
     )]
     pub fn convert_to_npy_py(
         py: Python,
-        src: &str,
-        dst: &str,
+        src: PathBuf,
+        dst: PathBuf,
         is_full_array: bool,
         message: Option<&str>,
     ) -> PyResult<()> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
-        Self::convert_to_npy(src, dst, is_full_array, message).map_err(|e| e.into())
+        Self::convert_to_npy(
+            src.to_str().expect("Path should be valid"),
+            dst.to_str().expect("Path should be valid"),
+            is_full_array,
+            message,
+        )
+        .map_err(|e| e.into())
     }
 
     /// Apply corrections such as inpainting, rotating/flipping and any fixes directly
     /// to every bitplane and save results as new `.npy` file.
     #[pyo3(
         name = "process_cube",
-        text_signature = "(dst, colorspad_fix=False, grayspad_fix=False, message=None) -> Tuple[int]"
+        signature = (dst, colorspad_fix=false, grayspad_fix=false, message=None)
     )]
     pub fn process_cube_py<'py>(
         &'py self,
         py: Python<'py>,
-        dst: &str,
-        colorspad_fix: Option<bool>,
-        grayspad_fix: Option<bool>,
+        dst: PathBuf,
+        colorspad_fix: bool,
+        grayspad_fix: bool,
         message: Option<&str>,
     ) -> Result<(usize, usize, usize)> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
         self.process_cube(
-            dst,
-            colorspad_fix.unwrap_or(false),
-            grayspad_fix.unwrap_or(false),
+            dst.to_str().expect("Path should be valid"),
+            colorspad_fix,
+            grayspad_fix,
             message,
         )
     }
@@ -644,17 +684,19 @@ impl PhotonCube {
 
     /// Load the color-filter array associated with the photoncube, if applicable.
     /// Will be used for processing if loaded.
-    #[pyo3(text_signature = "(path)")]
-    pub fn load_cfa(&mut self, path: &str) -> Result<()> {
-        self.cfa_mask = Some(Self::_try_load_mask(path)?);
+    #[pyo3(signature = (path))]
+    pub fn load_cfa(&mut self, path: PathBuf) -> Result<()> {
+        self.cfa_mask = Some(Self::_try_load_mask(
+            path.to_str().expect("Path should be valid"),
+        )?);
         Ok(())
     }
 
     /// Load an inpainting mask. This can be called multiple times, the masks will
     /// simply be ORed together (interpolate where mask is true/white).
-    #[pyo3(text_signature = "(path)")]
-    pub fn load_mask(&mut self, path: &str) -> Result<()> {
-        let mut new_mask = Self::_try_load_mask(path)?;
+    #[pyo3(signature = (path))]
+    pub fn load_mask(&mut self, path: PathBuf) -> Result<()> {
+        let mut new_mask = Self::_try_load_mask(path.to_str().expect("Path should be valid"))?;
 
         if let Some(mask) = &self.inpaint_mask {
             new_mask = mask.bitor(new_mask);
@@ -665,7 +707,7 @@ impl PhotonCube {
 
     /// Set the range of the photoncube, this is used for slicing and frame preview
     /// where `burst_size` will be the number of frames to average together.
-    #[pyo3(text_signature = "(start, end=None, burst_size=None)")]
+    #[pyo3(signature = (start=0, end=None, burst_size=None))]
     pub fn set_range(&mut self, start: isize, end: Option<isize>, burst_size: Option<usize>) {
         self.start = start;
         self.end = end;
@@ -695,81 +737,72 @@ impl PhotonCube {
     }
 
     /// Save all virtual exposures to a folder.
-    // Note: We're stuck using an old pyo3 version so to emulate kwargs with defaults
-    //       we force all kwargs be Option<T> and unwrap_or them later with a default.
-    // TODO: Use pyo3's signature tuple once py36 dependency is dropped.
     #[pyo3(
         name = "save_images",
-        text_signature = "(img_dir, invert_response=False, tonemap2srgb=False, \
-            colorspad_fix=False, grayspad_fix=False, annotate_frames=False, message=None)"
+        signature = (img_dir, invert_response=false, tonemap2srgb=false, colorspad_fix=false, grayspad_fix=false, annotate_frames=false, message=None, step=1)
     )]
-    #[warn(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn save_images_py(
         &self,
         py: Python,
-        img_dir: &str,
-        invert_response: Option<bool>,
-        tonemap2srgb: Option<bool>,
-        colorspad_fix: Option<bool>,
-        grayspad_fix: Option<bool>,
-        annotate_frames: Option<bool>,
+        img_dir: PathBuf,
+        invert_response: bool,
+        tonemap2srgb: bool,
+        colorspad_fix: bool,
+        grayspad_fix: bool,
+        annotate_frames: bool,
         message: Option<&str>,
-        step: Option<usize>
+        step: usize,
     ) -> Result<isize> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
-        let process = self.process_single(
-            invert_response.unwrap_or(false),
-            tonemap2srgb.unwrap_or(false),
-            colorspad_fix.unwrap_or(false),
-            grayspad_fix.unwrap_or(false),
-        )?;
+        let process =
+            self.process_single(invert_response, tonemap2srgb, colorspad_fix, grayspad_fix)?;
         self.save_images(
-            img_dir,
+            img_dir.to_str().expect("Path should be valid"),
             Some(process),
-            annotate_frames.unwrap_or(false),
+            annotate_frames,
             message,
-            step.unwrap_or(1)
+            step,
         )
     }
 
     /// Save all virtual exposures as a video (and optionally images).
-    // Note: Same issue than with `save_images_py`, manual kwargs defaults...
-    // TODO: Use pyo3's signature tuple once py36 dependency is dropped.
     #[pyo3(
         name = "save_video",
-        text_signature = "(output, fps=24, img_dir=None, invert_response=False, tonemap2srgb=False, \
-            colorspad_fix=False, grayspad_fix=False, annotate_frames=False, message=None)"
+        signature = (output, fps=24, img_dir=None, invert_response=false, tonemap2srgb=false, colorspad_fix=false, grayspad_fix=false, annotate_frames=false, crf=28, preset="ultrafast", message=None, step=1)
     )]
+    #[allow(clippy::too_many_arguments)]
     pub fn save_video_py(
         &self,
         py: Python,
-        output: &str,
+        output: PathBuf,
         fps: Option<u64>,
-        img_dir: Option<&str>,
-        invert_response: Option<bool>,
-        tonemap2srgb: Option<bool>,
-        colorspad_fix: Option<bool>,
-        grayspad_fix: Option<bool>,
-        annotate_frames: Option<bool>,
+        img_dir: Option<PathBuf>,
+        invert_response: bool,
+        tonemap2srgb: bool,
+        colorspad_fix: bool,
+        grayspad_fix: bool,
+        annotate_frames: bool,
+        crf: u32,
+        preset: Option<&str>,
         message: Option<&str>,
-        step: Option<usize>
+        step: usize,
     ) -> Result<isize> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
-        let process = self.process_single(
-            invert_response.unwrap_or(false),
-            tonemap2srgb.unwrap_or(false),
-            colorspad_fix.unwrap_or(false),
-            grayspad_fix.unwrap_or(false),
-        )?;
+        let process =
+            self.process_single(invert_response, tonemap2srgb, colorspad_fix, grayspad_fix)?;
+
         self.save_video(
             output,
-            fps.unwrap_or(24),
+            fps.unwrap_or(28),
             img_dir,
             Some(process),
-            annotate_frames.unwrap_or(false),
+            annotate_frames,
+            Some(crf),
+            preset.map(Preset::from_str).transpose()?,
             message,
             None,
-            step.unwrap_or(1)
+            step,
         )
     }
 

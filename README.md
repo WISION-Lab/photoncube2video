@@ -62,7 +62,7 @@ pc.save_images(
 
 # Make video preview instead, but transform frames first, and invert the SPAD
 # response, and normalize to a 95% quantile, for better low-light performance
-pc.set_transforms([Transforms.Rot90, Transforms.FlipUD])
+pc.set_transforms([Transform.Rot90, Transform.FlipUD])
 pc.set_quantile(0.95)
 pc.save_video(
     "output.mp4", fps=24, 
