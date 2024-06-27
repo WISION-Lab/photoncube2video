@@ -154,13 +154,13 @@ impl PhotonCube {
         P: AsRef<Path>,
     {
         let path = path.as_ref();
-        let ext = path.extension().unwrap().to_ascii_lowercase();
+        let ext = path.extension().expect("File should have valid filename").to_ascii_lowercase();
 
         if !path.exists() || !path.is_file() || ext != "npy" {
             // TODO: This should probably be a specific IO error?
             return Err(anyhow!(
                 "No `.npy` file found at {}!",
-                path.to_str().expect("Path should be valid")
+                path.display()
             ));
         }
 
@@ -182,7 +182,7 @@ impl PhotonCube {
 
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one.
     /// For more see `convert_to_npy_py`, the python analogue to this method.
-    pub fn convert_to_npy<P: AsRef<Path> + Copy>(
+    pub fn convert_to_npy<P: AsRef<Path>>(
         src: P,
         dst: P,
         is_full_array: bool,
@@ -212,7 +212,7 @@ impl PhotonCube {
                 (256, 512 / 8)
             };
             let t = paths.len() * batch_size;
-            let file = File::create(dst)?;
+            let file = File::create(dst.as_ref())?;
             write_zeroed_npy::<u8, _>(&file, (t, h, w)).map_err(|e| anyhow!(e))?;
 
             // Memory-map the file and create the mutable view.
@@ -363,7 +363,7 @@ impl PhotonCube {
 
     /// Apply corrections such as inpainting, rotating/flipping and any fixes directly
     /// to every bitplane and save results as new `.npy` file.
-    pub fn process_cube<P: AsRef<Path> + Copy>(
+    pub fn process_cube<P: AsRef<Path>>(
         &self,
         dst: P,
         colorspad_fix: bool,
@@ -417,7 +417,7 @@ impl PhotonCube {
         };
 
         // Create empty dst file
-        let file = File::create(dst)?;
+        let file = File::create(dst.as_ref())?;
         let probe_bitplane = process_bitplane(slice.slice(s![0, .., ..]));
         let (full_h, full_w) = probe_bitplane.dim();
         let (out_h, out_w) = pack_single(&probe_bitplane.view(), 1)?.dim();
@@ -578,7 +578,7 @@ impl PhotonCube {
     }
 }
 
-// Note: Methods in this `impl` block are exposed to python
+// Note: Methods in this `impl` block are exposed to python.
 #[pymethods]
 impl PhotonCube {
     /// Open a photoncube from a memmapped `.npy` file.
@@ -586,9 +586,9 @@ impl PhotonCube {
     /// as it is non-trivial to do when using the full-array and requires
     /// entirely loading the photoncube into memory. Convert to `.npy` first.
     #[classmethod]
-    #[pyo3(name = "open", text_signature = "(path)")]
+    #[pyo3(name = "open", signature = (path))]
     pub fn open_py(_: &Bound<'_, PyType>, path: PathBuf) -> Result<Self> {
-        Self::open(path.to_str().expect("Path should be valid"))
+        Self::open(path)
     }
 
     /// Convert a photon cube stored as a set of `.bin` files to a `.npy` one. This is done
@@ -609,8 +609,8 @@ impl PhotonCube {
     ) -> PyResult<()> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
         Self::convert_to_npy(
-            src.to_str().expect("Path should be valid"),
-            dst.to_str().expect("Path should be valid"),
+            src,
+            dst,
             is_full_array,
             message,
         )
@@ -633,7 +633,7 @@ impl PhotonCube {
     ) -> Result<(usize, usize, usize)> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
         self.process_cube(
-            dst.to_str().expect("Path should be valid"),
+            dst,
             colorspad_fix,
             grayspad_fix,
             message,
@@ -687,7 +687,7 @@ impl PhotonCube {
     #[pyo3(signature = (path))]
     pub fn load_cfa(&mut self, path: PathBuf) -> Result<()> {
         self.cfa_mask = Some(Self::_try_load_mask(
-            path.to_str().expect("Path should be valid"),
+            path,
         )?);
         Ok(())
     }
@@ -696,7 +696,7 @@ impl PhotonCube {
     /// simply be ORed together (interpolate where mask is true/white).
     #[pyo3(signature = (path))]
     pub fn load_mask(&mut self, path: PathBuf) -> Result<()> {
-        let mut new_mask = Self::_try_load_mask(path.to_str().expect("Path should be valid"))?;
+        let mut new_mask = Self::_try_load_mask(path)?;
 
         if let Some(mask) = &self.inpaint_mask {
             new_mask = mask.bitor(new_mask);
@@ -758,7 +758,7 @@ impl PhotonCube {
         let process =
             self.process_single(invert_response, tonemap2srgb, colorspad_fix, grayspad_fix)?;
         self.save_images(
-            img_dir.to_str().expect("Path should be valid"),
+            img_dir,
             Some(process),
             annotate_frames,
             message,
@@ -809,5 +809,16 @@ impl PhotonCube {
     /// Total number of bitplanes in cube (independent of `set_range`).
     pub fn len(&self) -> usize {
         self.view().expect("Cannot load photoncube").len_of(Axis(0))
+    }
+
+    /// Get shape of photoncube with possible bitpacking 
+    #[getter]
+    pub fn shape(&self) -> (usize, usize, usize) {
+        self.view().expect("Cannot load photoncube").dim()
+    }
+
+    /// Same as `self.len()`
+    pub fn __len__(&self) -> usize {
+        self.len()
     }
 }

@@ -15,16 +15,97 @@ To compile it locally, simply clone the repository, `cd` into it and run:
 ```
 pip install -v . 
 ```
-Ensure you have an up-to-date pip, and an adequate rust toolchain installed ([install from here](https://rustup.rs/), MSRV: 1.74.0), else this might fail. This should work for python >= 3.6.
+Ensure you have an up-to-date pip, and an adequate rust toolchain installed ([install from here](https://rustup.rs/)), else this might fail. This should work for python >= 3.8 (tested with 3.8 and py 3.12). You might have to update your rust toolchain with `rustup update` (MSRV: 1.74.0).
 
 
 This should pull in any rust dependencies and compile bindings that are compatible with your machine's env. It will create both a CLI and package.  
 If this is your first time compiling a rust project, this may take a few minutes.
 
+
+### CLI Usage:
+
+Three main functions are available via the CLI: `preview`, `process`, and `convert`.
+
+```
+$ photoncube2video -h
+
+Convert a photon cube (npy file/directory of bin files) between formats or to a video preview (mp4) by naively averaging frames
+
+Usage: photoncube2video <COMMAND>
+
+Commands:
+  convert  Convert photoncube from a collection of .bin files to a .npy file
+  preview  Extract and preview virtual exposures from a photoncube
+  process  Apply corrections directly to every bitplane and save results as new .npy file
+  help     Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+For more info, run `photoncube2video <COMMAND> --help`.
+
+
+#### Preview
+
+To preview a photoncube as a video or series of frames (either averaged or single bitplanes), the photon cube needs to be saved as a npy file. See `convert` for how to convert a folder of `.bin` files to an `.npy` file.
+
+
+Here we preview a photoncube as a video and apply a rotation by 270 degrees then flip frames left-right:
+```
+photoncube2video preview -i binary.npy -t=rot270 -t=flip-lr -o video.mp4
+```
+_Note:_ Transforms can be composed arbitrarily, and order matters. Valid transforms are enumerated [here](./src/transforms.rs) and are serialized in kebab-case, i.e: Transform::FlipLR is "flip-lr" and so on. 
+
+
+You can annotate frames and correct for cfa arrays and inpaint like so:
+```
+photoncube2video preview -i binary.npy -a --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy -o video.mp4
+```
+_Note:_ Multiple `inpaint-path`s can be specified. These masks will be OR'd together then used.
+
+
+Individual frames can be saved using the `--img-dir` option, and a range of frames, as well as the window over which we aggregate frames, can be specified:
+```
+photoncube2video preview -i binary.npy --img-dir=frames/ --start=20000 --end=50000 --burst-size=100
+```
+_Note:_ You can, of course, save a video and frames at the same time!
+
+
+In particular, if you wish to view individual bitplanes, you can set `burst-size` to one, and use the `step` argument to skip over frames as to not create a huge video. For a photoncube captured at 15kHz, a realtime playback of individual bitplanes can be shown:
+```
+photoncube2video preview -i binary.npy --batch-size=1 --step=625 -o video.mp4
+```
+_Note:_ Here we set step=625 because the default playback speed is 24 fps (i.e: 15k/24 == 625), but the fps can also be changed using `--fps`, although using a very large or small fps will cause ffmpeg issues.
+
+
+#### Process
+
+Many of the operations detailed above can be applied directly to a photoncube at the bitplane level, notably all transforms, slicing operations (start/end) and inpainting/cfa-correction can be applied. The later will use a dithering-like approach to perform stochastic inpainting. Again, only numpy files are supported.
+
+Here we process a photoncube by applying cfa corrections and a few transforms:
+```
+photoncube2video process -i binary.npy --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy --start=0 --end=100000 -t flip-lr -o processed.npy
+```
+
+
+#### Convert
+
+You can convert from a collection of .bin files to a single .npy file like so:
+```
+photoncube2video convert -i <DIR OF BINS> -o <OUTPUT>
+```
+
+By default this assumes half array frames (i.e: 256x512), you can specify `--full-array` for the whole array. 
+
+
 ### Library Usage (Python)
 
+The python API mirrors the rust and CLI functionality, for more info on how to use it please see the above section.
+
 ```python
-from photoncube2video import PhotonCube, Transforms
+from photoncube2video import PhotonCube, Transform
 
 PhotonCube.convert_to_npy(
     # Directory containing `.bin` files
@@ -74,65 +155,20 @@ pc.save_video(
 ) 
 
 # Save a new photoncube that has been processed with any transforms,
-# cfas, masks or colr/grayspad fixes.
+# cfas, masks or color/grayspad fixes  such as cropping dead regions or column swapping.
 pc.process_cube("processed.npy")
 ```
 For the full python API and up-to-date typing, see [photoncube2video.pyi](./photoncube2video.pyi).
 
 
-### CLI Usage:
-
-Two main functions are available via the CLI: `preview` and `convert`.
-
-```
-$ photoncube2video -h
-
-Convert a photon cube (npy file/directory of bin files) between formats or to a video preview (mp4) by naively averaging frames
-
-Usage: photoncube2video <COMMAND>
-
-Commands:
-  convert  Convert photoncube from a collection of .bin files to a .npy file
-  preview  Extract and preview virtual exposures from a photoncube
-  help     Print this message or the help of the given subcommand(s)
-
-Options:
-  -h, --help     Print help
-  -V, --version  Print version
-```
-
-#### Preview
-
-Transforms can be composed. Here we apply a rotation by 270 degrees then flip frames left-right:
-```
-photoncube2video preview -i binary.npy -t=rot270 -t=flip-lr -o video.mp4
-```
-
-
-You can annotate frames and correct for cfa arrays and inpaint like so:
-```
-photoncube2video preview -i binary.npy -a --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy -o video.mp4
-```
-Multiple `inpaint-path`s can be specified. These masks will be OR'd together then used.
-
-
-Individual frames can be saved using the `--img-dir` option, and a range of frames can also be specified:
-```
-photoncube2video preview -i binary.npy --img-dir=frames/ --start=20000 --end=50000
-```
-
-#### Convert
-
-You can convert from a collection of .bin files to a single .npy file like so:
-```
-photoncube2video convert -i <DIR OF BINS> -o <OUTPUT>
-```
-
-By default this assumes half array frames (i.e: 256x512), you can specify `--full-array` for the whole array. 
-
 ### Development
 
 We use [maturin](https://www.maturin.rs/) as a build system, which enables this package to be built as a python extension using [pyo3](https://pyo3.rs) bindings. Some other tools are needed for development work, which can be installed using `pip install -v .[dev]`.
+
+There are both rust tests, and python ones, run them with:
+```
+cargo test && pytest . 
+```
 
 #### Code Quality
 

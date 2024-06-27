@@ -19,7 +19,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest",
-    "black"
+    "black",
+    "imageio"
 ]
 
 [tool.maturin]
