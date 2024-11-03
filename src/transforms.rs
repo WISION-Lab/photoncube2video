@@ -3,9 +3,9 @@ use std::{
     ops::BitOrAssign,
 };
 
+use ab_glyph::{FontRef, PxScale};
 use anyhow::{anyhow, Result};
 use clap::ValueEnum;
-use conv::ValueFrom;
 use fastrand;
 use image::{imageops, GrayImage, ImageBuffer, Luma, Pixel, Rgb, RgbImage};
 use imageproc::{
@@ -17,11 +17,10 @@ use ndarray::{concatenate, s, Array, Array2, Array3, ArrayView2, ArrayView3, Axi
 use ndarray_stats::{interpolate::Linear, QuantileExt};
 use noisy_float::types::n64;
 use pyo3::prelude::*;
-use rusttype::{Font, Scale};
 use strum_macros::EnumString;
 
-#[pyclass]
-#[derive(ValueEnum, Clone, Copy, Debug, EnumString)]
+#[pyclass(eq, eq_int)]
+#[derive(ValueEnum, Clone, Copy, Debug, EnumString, PartialEq)]
 pub enum Transform {
     Identity,
     Rot90,
@@ -36,7 +35,7 @@ impl Transform {
     /// Get transform from it's string repr, options are:
     /// "identity", "rot90", "rot180", "rot270", "flip-ud", "flip-lr"
     #[staticmethod]
-    #[pyo3(name = "from_str", text_signature = "(transform_name)")]
+    #[pyo3(name = "from_str", signature=(transform_name))]
     pub fn from_str_py(transform_name: &str) -> PyResult<Self> {
         Self::from_str(transform_name, true).map_err(|e| anyhow!(e).into())
     }
@@ -103,7 +102,7 @@ where
     ImageBuffer::<Luma<T>, Vec<T>>::from_raw(
         frame.len_of(Axis(1)) as u32,
         frame.len_of(Axis(0)) as u32,
-        frame.into_raw_vec(),
+        frame.into_raw_vec_and_offset().0,
     )
     .unwrap()
 }
@@ -135,7 +134,7 @@ where
 {
     assert!(arr.is_standard_layout());
     let (height, width, _) = arr.dim();
-    let raw = arr.into_raw_vec();
+    let (raw, _) = arr.into_raw_vec_and_offset();
 
     ImageBuffer::<P, Vec<P::Subpixel>>::from_raw(width as u32, height as u32, raw)
         .expect("container should have the right size for the image dimensions")
@@ -182,11 +181,10 @@ pub fn annotate<P>(frame: &mut Image<P>, text: &str, color: P)
 where
     P: Pixel,
     <P as Pixel>::Subpixel: Clamp<f32>,
-    f32: ValueFrom<<P as Pixel>::Subpixel>,
+    f32: From<<P as Pixel>::Subpixel>,
 {
-    let font = Vec::from(include_bytes!("DejaVuSans.ttf") as &[u8]);
-    let font = Font::try_from_vec(font).unwrap();
-    let scale = Scale { x: 20.0, y: 20.0 };
+    let font = FontRef::try_from_slice(include_bytes!("DejaVuSans.ttf")).unwrap();
+    let scale = PxScale { x: 20.0, y: 20.0 };
 
     draw_text_mut(frame, color, 5, 5, scale, &font, text);
     text_size(scale, &font, text);
@@ -280,6 +278,7 @@ where
 
 /// Process raw grayspad frame, either 256x512 (top) or 512x512 is expected.
 /// In both cases, the leftmost side is cropped.
+#[allow(clippy::reversed_empty_ranges)]
 pub fn process_grayspad<T>(frame: Array2<T>) -> Array2<T>
 where
     T: Clone + num_traits::Zero,

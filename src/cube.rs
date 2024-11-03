@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Result};
-use image::{io::Reader as ImageReader, Rgb};
+use image::{ImageReader, Rgb};
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use itertools::multizip;
 use memmap2::{Mmap, MmapMut};
@@ -154,14 +154,14 @@ impl PhotonCube {
         P: AsRef<Path>,
     {
         let path = path.as_ref();
-        let ext = path.extension().expect("File should have valid filename").to_ascii_lowercase();
+        let ext = path
+            .extension()
+            .expect("File should have valid filename")
+            .to_ascii_lowercase();
 
         if !path.exists() || !path.is_file() || ext != "npy" {
             // TODO: This should probably be a specific IO error?
-            return Err(anyhow!(
-                "No `.npy` file found at {}!",
-                path.display()
-            ));
+            return Err(anyhow!("No `.npy` file found at {}!", path.display()));
         }
 
         let file = File::open(path)?;
@@ -608,13 +608,7 @@ impl PhotonCube {
         message: Option<&str>,
     ) -> PyResult<()> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
-        Self::convert_to_npy(
-            src,
-            dst,
-            is_full_array,
-            message,
-        )
-        .map_err(|e| e.into())
+        Self::convert_to_npy(src, dst, is_full_array, message).map_err(|e| e.into())
     }
 
     /// Apply corrections such as inpainting, rotating/flipping and any fixes directly
@@ -632,12 +626,7 @@ impl PhotonCube {
         message: Option<&str>,
     ) -> Result<(usize, usize, usize)> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
-        self.process_cube(
-            dst,
-            colorspad_fix,
-            grayspad_fix,
-            message,
-        )
+        self.process_cube(dst, colorspad_fix, grayspad_fix, message)
     }
 
     #[getter(inpaint_mask)]
@@ -686,9 +675,7 @@ impl PhotonCube {
     /// Will be used for processing if loaded.
     #[pyo3(signature = (path))]
     pub fn load_cfa(&mut self, path: PathBuf) -> Result<()> {
-        self.cfa_mask = Some(Self::_try_load_mask(
-            path,
-        )?);
+        self.cfa_mask = Some(Self::_try_load_mask(path)?);
         Ok(())
     }
 
@@ -717,7 +704,7 @@ impl PhotonCube {
     /// Define which transforms to apply to virtual exposures. Tranforms are applied
     /// sequentially and can thus be composed (i.e: Rot90+Rot90=Rot180).
     /// Options are: "Identity", "Rot90", "Rot180", "Rot270", "FlipUD", "FlipLR"
-    #[pyo3(name = "set_transforms", text_signature = "(transforms)")]
+    #[pyo3(name = "set_transforms", signature=(transforms))]
     pub fn set_transforms_py(&mut self, transforms: Vec<Transform>) -> Result<()> {
         self.transforms = transforms;
         Ok(())
@@ -725,7 +712,7 @@ impl PhotonCube {
 
     /// Set quantile to use when inverting SPAD response, this is only used
     /// when `invert_response` is set to True. Quantile must be in 0-1 range.
-    #[pyo3(name = "set_quantile", text_signature = "(quantile=None)")]
+    #[pyo3(name = "set_quantile", signature=(quantile=None))]
     pub fn set_quantile_py(&mut self, quantile: Option<f32>) -> Result<()> {
         if let Some(qtl) = quantile {
             if !(0.0..=1.0).contains(&qtl) {
@@ -757,13 +744,7 @@ impl PhotonCube {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
         let process =
             self.process_single(invert_response, tonemap2srgb, colorspad_fix, grayspad_fix)?;
-        self.save_images(
-            img_dir,
-            Some(process),
-            annotate_frames,
-            message,
-            step,
-        )
+        self.save_images(img_dir, Some(process), annotate_frames, message, step)
     }
 
     /// Save all virtual exposures as a video (and optionally images).
@@ -811,7 +792,12 @@ impl PhotonCube {
         self.view().expect("Cannot load photoncube").len_of(Axis(0))
     }
 
-    /// Get shape of photoncube with possible bitpacking 
+    /// True if the photon cube is empty or not yet loaded.
+    pub fn is_empty(&self) -> bool {
+        self.view().map_or(true, |p| p.len_of(Axis(0)) == 0)
+    }
+
+    /// Get shape of photoncube with possible bitpacking
     #[getter]
     pub fn shape(&self) -> (usize, usize, usize) {
         self.view().expect("Cannot load photoncube").dim()
