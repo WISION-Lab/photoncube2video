@@ -85,7 +85,14 @@ jobs:
           args: --release --out dist --find-interpreter
           # sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
-          before-script-linux: source .github/workflows/install-runtime-packages.sh
+          before-script-linux: |
+            if command -v yum &> /dev/null; then
+                # If we're running on rhel centos, install needed packages.
+                yum update -y && yum install -y perl-core openssl openssl-devel pkgconfig libatomic
+            else
+                # If we're running on debian-based system.
+                apt update -y && apt-get install -y libssl-dev openssl pkg-config
+            fi
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
