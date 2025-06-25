@@ -57,7 +57,7 @@ impl<'py> DeferredSignal<'py> {
     }
 }
 
-impl<'py> Drop for DeferredSignal<'py> {
+impl Drop for DeferredSignal<'_> {
     /// Restore default SIGINT handler when object goes out of scope.
     fn drop(&mut self) {
         if self.is_main_thread {
@@ -74,7 +74,7 @@ impl<'py> Drop for DeferredSignal<'py> {
     }
 }
 
-impl<'py> std::fmt::Display for DeferredSignal<'py> {
+impl std::fmt::Display for DeferredSignal<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,

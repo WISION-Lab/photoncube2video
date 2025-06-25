@@ -79,7 +79,7 @@ pub trait VirtualExposure {
     ) -> impl Iterator<Item = Array2<f32>>;
 }
 
-impl<'a> VirtualExposure for PhotonCubeView<'a> {
+impl VirtualExposure for PhotonCubeView<'_> {
     fn par_virtual_exposures(
         &self,
         burst_size: usize,
@@ -606,9 +606,9 @@ impl PhotonCube {
         dst: PathBuf,
         is_full_array: bool,
         message: Option<&str>,
-    ) -> PyResult<()> {
+    ) -> Result<()> {
         let _defer = DeferredSignal::new(py, "SIGINT")?;
-        Self::convert_to_npy(src, dst, is_full_array, message).map_err(|e| e.into())
+        Self::convert_to_npy(src, dst, is_full_array, message)
     }
 
     /// Apply corrections such as inpainting, rotating/flipping and any fixes directly
@@ -801,6 +801,25 @@ impl PhotonCube {
     #[getter]
     pub fn shape(&self) -> (usize, usize, usize) {
         self.view().expect("Cannot load photoncube").dim()
+    }
+
+    /// Access individual bitplanes. Only simple integer-indexing is permitted. For more complex slicing,
+    /// first get desired fraem then use numpy to slice, e.g: `cube[4][..., 100:200]`.
+    pub fn __getitem__<'py>(&'py self, py: Python<'py>, idx: isize) -> Result<Py<PyAny>> {
+        let view = self.view()?;
+        let idx = if idx < 0 {
+            self.len() as isize + idx
+        } else {
+            idx
+        };
+        let arr = view.index_axis(Axis(0), idx as usize);
+        let arr = unpack_single::<u8>(&arr, 1)?;
+
+        let py_arr = arr.to_pyarray_bound(py).to_owned().into_py(py);
+        py_arr
+            .getattr(py, "setflags")?
+            .call1(py, (false, None::<bool>, None::<bool>))?;
+        Ok(py_arr)
     }
 
     /// Same as `self.len()`

@@ -1,15 +1,16 @@
 from natsort import natsorted
 import pytest
-import numpy as np 
-import imageio.v3 as iio 
+import numpy as np
+import imageio.v3 as iio
 
 
 @pytest.fixture
 def photoncube(tmp_path):
     path = tmp_path / "cube.npy"
-    cube = np.random.randint(low=0, high=255, size=(256, 64 // 8, 64), dtype=np.uint8)    
+    cube = np.random.randint(low=0, high=255, size=(256, 64 // 8, 64), dtype=np.uint8)
     np.save(path, cube)
     return path, cube
+
 
 def test_import():
     import photoncube2video
@@ -32,7 +33,7 @@ def test_save_images(photoncube, tmp_path):
     pc = PhotonCube.open(str(path))
     pc.set_range(200, 205, 1)
     pc.save_images(tmp_path)
-    
+
     for i, path in zip(range(200, 205), natsorted(tmp_path.glob("*.png"))):
         arr = iio.imread(path)
         packed = np.packbits(arr, axis=1).mean(axis=2)

@@ -1,15 +1,14 @@
 import argparse
-from pathlib import Path 
+from pathlib import Path
 from photoncube2video import PhotonCube, Transform
+
 
 def main(args):
     pc = PhotonCube.open(args.input)
     pc.set_transforms([Transform.Rot90, Transform.FlipUD])
     pc.set_range(0, 10000, 256)
-    pc.save_video(
-        args.output,
-        message="Making video..." 
-    ) 
+    pc.save_video(args.output, message="Making video...")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="Preview PhotonCube")

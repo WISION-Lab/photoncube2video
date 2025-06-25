@@ -36,8 +36,8 @@ impl Transform {
     /// "identity", "rot90", "rot180", "rot270", "flip-ud", "flip-lr"
     #[staticmethod]
     #[pyo3(name = "from_str", signature=(transform_name))]
-    pub fn from_str_py(transform_name: &str) -> PyResult<Self> {
-        Self::from_str(transform_name, true).map_err(|e| anyhow!(e).into())
+    pub fn from_str_py(transform_name: &str) -> Result<Self> {
+        Self::from_str(transform_name, true).map_err(|e| anyhow!(e))
     }
 }
 
