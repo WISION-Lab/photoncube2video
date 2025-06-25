@@ -47,8 +47,8 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --find-interpreter
           # sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          manylinux: auto
-          before-script-linux: source ".github/workflows/build_openssl.sh"
+          manylinux: 2014
+          before-script-linux: yum update -y && yum install -y openssl-devel
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
