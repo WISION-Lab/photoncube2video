@@ -34,6 +34,11 @@ rusttype = "0.9.3"
 tempfile = "3.13.0"
 pyo3 = { version = "0.22.5", features = ["extension-module", "anyhow"] }
 
+# Note: We don't depend on openssl directly, but ffmpeg-sidecar does (see: cargo tree -i openssl)
+# Here we target the _same_ openssl version, and include the vendored feature as to not rely on
+# manually installing openssl on every flavor of manylinux/musllinux
+openssl = { version = "0.10.68", features = ["vendored"] }
+
 numpy = "0.22.1"
 strum_macros = "0.26.4"
 paste = "1.0.15"
