@@ -118,6 +118,9 @@ PhotonCube.convert_to_npy(
 # Open cube 
 pc = PhotonCube.open("test.npy")
 
+# Get a frame
+frame = pc[10]
+
 # Load inpainting masks, both .png and .npy supported.
 pc.load_mask("dead_pixels.png")
 pc.load_mask("hot_pixels.npy")
