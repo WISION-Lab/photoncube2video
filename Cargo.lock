@@ -1778,8 +1778,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "photoncube2video"
-version = "0.3.12"
+name = "photoncube"
+version = "0.3.14"
 dependencies = [
  "ab_glyph",
  "anyhow",

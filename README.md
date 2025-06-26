@@ -27,11 +27,11 @@ If this is your first time compiling a rust project, this may take a few minutes
 Three main functions are available via the CLI: `preview`, `process`, and `convert`.
 
 ```
-$ photoncube2video -h
+$ photoncube -h
 
 Convert a photon cube (npy file/directory of bin files) between formats or to a video preview (mp4) by naively averaging frames
 
-Usage: photoncube2video <COMMAND>
+Usage: photoncube <COMMAND>
 
 Commands:
   convert  Convert photoncube from a collection of .bin files to a .npy file
@@ -44,7 +44,7 @@ Options:
   -V, --version  Print version
 ```
 
-For more info, run `photoncube2video <COMMAND> --help`.
+For more info, run `photoncube <COMMAND> --help`.
 
 
 #### Preview
@@ -54,28 +54,28 @@ To preview a photoncube as a video or series of frames (either averaged or singl
 
 Here we preview a photoncube as a video and apply a rotation by 270 degrees then flip frames left-right:
 ```
-photoncube2video preview -i binary.npy -t=rot270 -t=flip-lr -o video.mp4
+photoncube preview -i binary.npy -t=rot270 -t=flip-lr -o video.mp4
 ```
 _Note:_ Transforms can be composed arbitrarily, and order matters. Valid transforms are enumerated [here](./src/transforms.rs) and are serialized in kebab-case, i.e: Transform::FlipLR is "flip-lr" and so on. 
 
 
 You can annotate frames and correct for cfa arrays and inpaint like so:
 ```
-photoncube2video preview -i binary.npy -a --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy -o video.mp4
+photoncube preview -i binary.npy -a --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy -o video.mp4
 ```
 _Note:_ Multiple `inpaint-path`s can be specified. These masks will be OR'd together then used.
 
 
 Individual frames can be saved using the `--img-dir` option, and a range of frames, as well as the window over which we aggregate frames, can be specified:
 ```
-photoncube2video preview -i binary.npy --img-dir=frames/ --start=20000 --end=50000 --burst-size=100
+photoncube preview -i binary.npy --img-dir=frames/ --start=20000 --end=50000 --burst-size=100
 ```
 _Note:_ You can, of course, save a video and frames at the same time!
 
 
 In particular, if you wish to view individual bitplanes, you can set `burst-size` to one, and use the `step` argument to skip over frames as to not create a huge video. For a photoncube captured at 15kHz, a realtime playback of individual bitplanes can be shown:
 ```
-photoncube2video preview -i binary.npy --batch-size=1 --step=625 -o video.mp4
+photoncube preview -i binary.npy --batch-size=1 --step=625 -o video.mp4
 ```
 _Note:_ Here we set step=625 because the default playback speed is 24 fps (i.e: 15k/24 == 625), but the fps can also be changed using `--fps`, although using a very large or small fps will cause ffmpeg issues.
 
@@ -86,7 +86,7 @@ Many of the operations detailed above can be applied directly to a photoncube at
 
 Here we process a photoncube by applying cfa corrections and a few transforms:
 ```
-photoncube2video process -i binary.npy --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy --start=0 --end=100000 -t flip-lr -o processed.npy
+photoncube process -i binary.npy --cfa-path=rgbw_oh_bn_color_ss2_corrected.png --inpaint-path=colorspad_inpaint_mask.npy --start=0 --end=100000 -t flip-lr -o processed.npy
 ```
 
 
@@ -94,7 +94,7 @@ photoncube2video process -i binary.npy --cfa-path=rgbw_oh_bn_color_ss2_corrected
 
 You can convert from a collection of .bin files to a single .npy file like so:
 ```
-photoncube2video convert -i <DIR OF BINS> -o <OUTPUT>
+photoncube convert -i <DIR OF BINS> -o <OUTPUT>
 ```
 
 By default this assumes half array frames (i.e: 256x512), you can specify `--full-array` for the whole array. 
@@ -105,7 +105,7 @@ By default this assumes half array frames (i.e: 256x512), you can specify `--ful
 The python API mirrors the rust and CLI functionality, for more info on how to use it please see the above section.
 
 ```python
-from photoncube2video import PhotonCube, Transform
+from photoncube import PhotonCube, Transform
 
 PhotonCube.convert_to_npy(
     # Directory containing `.bin` files
@@ -161,7 +161,7 @@ pc.save_video(
 # cfas, masks or color/grayspad fixes  such as cropping dead regions or column swapping.
 pc.process_cube("processed.npy")
 ```
-For the full python API and up-to-date typing, see [photoncube2video.pyi](./photoncube2video.pyi).
+For the full python API and up-to-date typing, see [photoncube.pyi](./photoncube.pyi).
 
 
 ### Development

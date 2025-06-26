@@ -13,12 +13,12 @@ def photoncube(tmp_path):
 
 
 def test_import():
-    import photoncube2video
-    from photoncube2video import PhotonCube, Transform
+    import photoncube
+    from photoncube import PhotonCube, Transform
 
 
 def test_open(photoncube):
-    from photoncube2video import PhotonCube
+    from photoncube import PhotonCube
 
     path, cube = photoncube
     pc = PhotonCube.open(path)
@@ -27,7 +27,7 @@ def test_open(photoncube):
 
 
 def test_save_images(photoncube, tmp_path):
-    from photoncube2video import PhotonCube
+    from photoncube import PhotonCube
 
     path, cube = photoncube
     pc = PhotonCube.open(str(path))
@@ -41,7 +41,7 @@ def test_save_images(photoncube, tmp_path):
 
 
 def test_masks_readonly(photoncube):
-    from photoncube2video import PhotonCube
+    from photoncube import PhotonCube
 
     path, _ = photoncube
     pc = PhotonCube.open(path)
@@ -58,7 +58,7 @@ def test_masks_readonly(photoncube):
 
 
 def test_validate_transforms():
-    from photoncube2video import Transform
+    from photoncube import Transform
 
     with pytest.raises(RuntimeError, match="invalid variant"):
         Transform.from_str("abc")

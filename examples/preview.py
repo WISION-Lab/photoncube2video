@@ -1,6 +1,6 @@
 import argparse
 from pathlib import Path
-from photoncube2video import PhotonCube, Transform
+from photoncube import PhotonCube, Transform
 
 
 def main(args):

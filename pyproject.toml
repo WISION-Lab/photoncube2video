@@ -3,7 +3,7 @@ requires = ["maturin>=1.8,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "photoncube2video"
+name = "photoncube"
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Rust",
@@ -27,5 +27,5 @@ dev = [
 features = ["pyo3/extension-module"]
 
 [project.scripts]
-photoncube2video = "photoncube2video:cli_entrypoint"
-pcube = "photoncube2video:cli_entrypoint"
+photoncube = "photoncube:cli_entrypoint"
+pcube = "photoncube:cli_entrypoint"

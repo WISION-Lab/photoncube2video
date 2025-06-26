@@ -1,7 +1,7 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use fastrand;
 use ndarray::Array2;
-use photoncube2video::transforms::interpolate_where_mask;
+use photoncube::transforms::interpolate_where_mask;
 #[cfg(target_os = "linux")]
 use pprof::criterion::{Output, PProfProfiler};
 

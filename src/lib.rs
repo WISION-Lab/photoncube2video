@@ -11,7 +11,7 @@ use transforms::Transform;
 use crate::{cli::cli_entrypoint, cube::PhotonCube};
 
 #[pymodule]
-fn photoncube2video(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn photoncube(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli_entrypoint, m)?)?;
     m.add_class::<PhotonCube>()?;
     m.add_class::<Transform>()?;
