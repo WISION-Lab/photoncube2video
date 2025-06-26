@@ -26,8 +26,8 @@ jobs:
         platform:
           - runner: ubuntu-22.04
             target: x86_64
-          # - runner: ubuntu-22.04
-          #   target: x86
+          - runner: ubuntu-22.04
+            target: x86
           # - runner: ubuntu-22.04
           #   target: aarch64
           # - runner: ubuntu-22.04
@@ -177,3 +177,4 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
+          repository-url: https://test.pypi.org/legacy/
