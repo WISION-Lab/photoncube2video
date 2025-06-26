@@ -5,11 +5,11 @@ use pyo3::{types::PyAnyMethods, Bound, PyAny, Python};
 /// and CTRL-C/SIGINTs and let rust handle them.  
 ///
 /// Usage:
-///     let _defer = DeferedSignal::new(py)?;
+///     let _defer = DeferredSignal::new(py, "SIGINT")?;
 ///
 /// Default handler is restored when `_defer` is dropped, which will usually
-/// happen when it fals out of scope. Due to this you _must_ assign it to a
-/// variable, otherwise `DeferedSignal` will be created and dropped immediately.
+/// happen when it falls out of scope. Due to this you _must_ assign it to a
+/// variable, otherwise `DeferredSignal` will be created and dropped immediately.
 pub struct DeferredSignal<'py> {
     set_sig: Option<Bound<'py, PyAny>>,
     signal: Option<Bound<'py, PyAny>>,
@@ -24,20 +24,18 @@ impl<'py> DeferredSignal<'py> {
     pub fn new(py: Python<'py>, signal_name: &str) -> Result<Self> {
         // Note: We cannot defer signals if not in Python's main thread, so if we
         //       detect we aren't we effectively NO-OP.
-        let threading_mod = py.import_bound("threading")?;
+        let threading_mod = py.import("threading")?;
         let current_thread = threading_mod.call_method("current_thread", (), None)?;
         let main_thread = threading_mod.call_method("main_thread", (), None)?;
         let is_main_thread = current_thread.as_ptr() == main_thread.as_ptr(); // Equiv to `is` but backwards compat.
 
         if is_main_thread {
-            let signal_mod = py.import_bound("signal")?;
-            let signal = signal_mod.getattr(signal_name)?;
-            let default_handler = signal_mod.getattr("getsignal")?.call1((signal.as_ref(),))?;
+            let signal_mod = py.import("signal")?;
             let set_sig = signal_mod.getattr("signal")?;
+            let signal = signal_mod.getattr(signal_name)?;
+            let signal_id: u32 = signal.getattr("value")?.extract()?;
+            let default_handler = set_sig.call1((signal_id, signal_mod.getattr("SIG_DFL")?))?;
 
-            set_sig
-                .call1((signal.as_ref(), signal_mod.getattr("SIG_DFL")?))
-                .map(|_| ())?;
             Ok(DeferredSignal {
                 set_sig: Some(set_sig),
                 signal: Some(signal),

@@ -1,6 +1,6 @@
 [package]
 name = "photoncube2video"
-version = "0.3.11"
+version = "0.3.12"
 edition = "2021"
 
 [lib]
@@ -20,7 +20,7 @@ glob = "0.3.1"
 image = "0.25.4"
 imageproc = "0.25.0"
 indicatif = {version = "*", features = ["rayon"]}
-itertools = "0.13.0"
+itertools = "0.14.0"
 memmap2 = "0.9.5"
 natord = "1.0.9"
 ndarray = { version = "0.16.1", features = ["rayon", "approx"] }
@@ -32,18 +32,18 @@ num-traits = "0.2.19"
 rayon = "1.10.0"
 rusttype = "0.9.3"
 tempfile = "3.13.0"
-pyo3 = { version = "0.22.5", features = ["extension-module", "anyhow"] }
+pyo3 = { version = "0.25.1", features = ["extension-module", "anyhow"] }
 
 # Note: We don't depend on openssl directly, but ffmpeg-sidecar does (see: cargo tree -i openssl)
 # Here we target the _same_ openssl version, and include the vendored feature as to not rely on
 # manually installing openssl on every flavor of manylinux/musllinux
 openssl = { version = "0.10.68", features = ["vendored"] }
 
-numpy = "0.22.1"
-strum_macros = "0.26.4"
+numpy = "0.25.0"
+strum_macros = "0.27.1"
 paste = "1.0.15"
 fastrand = "2.1.1"
-strum = { version = "0.26.3", features = ["strum_macros"] }
+strum = { version = "0.27.1", features = ["strum_macros"] }
 ab_glyph = "0.2.29"
 
 [package.metadata.cargo-machete]
@@ -54,7 +54,7 @@ lto = true
 
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-pprof = { version = "0.13", features = ["flamegraph", "criterion"] }
+pprof = { version = "0.15", features = ["flamegraph", "criterion"] }
 
 
 [profile.release-with-debug]

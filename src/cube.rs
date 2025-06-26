@@ -635,11 +635,11 @@ impl PhotonCube {
         self.inpaint_mask
             .as_ref()
             .map(|a| -> Result<Py<PyAny>> {
-                let py_arr = a.to_pyarray_bound(py).to_owned().into_py(py);
+                let py_arr = a.to_pyarray(py).to_owned();
                 py_arr
-                    .getattr(py, "setflags")?
-                    .call1(py, (false, None::<bool>, None::<bool>))?;
-                Ok(py_arr)
+                    .getattr("setflags")?
+                    .call1((false, None::<bool>, None::<bool>))?;
+                Ok(py_arr.into())
             })
             .transpose()
     }
@@ -656,11 +656,11 @@ impl PhotonCube {
         self.cfa_mask
             .as_ref()
             .map(|a| -> Result<Py<PyAny>> {
-                let py_arr = a.to_pyarray_bound(py).to_owned().into_py(py);
+                let py_arr = a.to_pyarray(py).to_owned();
                 py_arr
-                    .getattr(py, "setflags")?
-                    .call1(py, (false, None::<bool>, None::<bool>))?;
-                Ok(py_arr)
+                    .getattr("setflags")?
+                    .call1((false, None::<bool>, None::<bool>))?;
+                Ok(py_arr.into())
             })
             .transpose()
     }
@@ -815,11 +815,11 @@ impl PhotonCube {
         let arr = view.index_axis(Axis(0), idx as usize);
         let arr = unpack_single::<u8>(&arr, 1)?;
 
-        let py_arr = arr.to_pyarray_bound(py).to_owned().into_py(py);
+        let py_arr = arr.to_pyarray(py).to_owned();
         py_arr
-            .getattr(py, "setflags")?
-            .call1(py, (false, None::<bool>, None::<bool>))?;
-        Ok(py_arr)
+            .getattr("setflags")?
+            .call1((false, None::<bool>, None::<bool>))?;
+        Ok(py_arr.into())
     }
 
     /// Same as `self.len()`
