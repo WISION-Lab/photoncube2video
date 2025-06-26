@@ -10,19 +10,26 @@ Features:
 Limitations:
 - Not all features are exposed to python yet.
 
-### Getting Started 
+### Installation 
+
+Prebuilt wheels are available for most architectures, just:
+```
+pip install photoncube
+```
+
+#### Compile from Source
+
 To compile it locally, simply clone the repository, `cd` into it and run:
 ```
 pip install -v . 
 ```
-Ensure you have an up-to-date pip, and an adequate rust toolchain installed ([install from here](https://rustup.rs/)), else this might fail. This should work for python >= 3.8 (tested with 3.8 and py 3.12). You might have to update your rust toolchain with `rustup update` (MSRV: 1.74.0).
-
+Ensure you have an up-to-date pip, and an adequate rust toolchain installed ([install from here](https://rustup.rs/)), else this might fail. This should work for python >= 3.8 (tested with 3.8 and 3.12). You might have to update your rust toolchain with `rustup update` (MSRV: 1.74.0).
 
 This should pull in any rust dependencies and compile bindings that are compatible with your machine's env. It will create both a CLI and package.  
 If this is your first time compiling a rust project, this may take a few minutes.
 
 
-### CLI Usage:
+### CLI Usage
 
 Three main functions are available via the CLI: `preview`, `process`, and `convert`.
 
