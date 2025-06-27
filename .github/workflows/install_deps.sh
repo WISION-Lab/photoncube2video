@@ -13,6 +13,3 @@ fi
 # Use zig as the linker to avoid common linking issues
 python -m ensurepip --upgrade
 python -m pip install ziglang
-
-# Environment vars
-export CC=/usr/bin/cc
