@@ -7,7 +7,6 @@ else
     apt update -y && apt-get install -y libssl-dev openssl pkg-config
 fi
 
-# Missing linker envvars
-export HOST_CC=gcc
-export CC_x86_64_unknown_linux_gnu=/usr/bin/x86_64-linux-gnu-gcc
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/x86_64-linux-gnu-gcc
+# Use zig as the linker to avoid common linking issues
+python -m ensurepip --upgrade
+python -m pip install ziglang
